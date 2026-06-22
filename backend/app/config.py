@@ -27,3 +27,19 @@ W_EXCEPTIONAL = 50        # Exceptional Assignment (eligibility-exceeding overri
 W_SIXTH_DAY = 20          # R8  working a 6th day (only one day off)
 W_PREFERENCE = 10         # R10 working an avoided shift
 W_FAIRNESS = 5            # R9  burden-shift imbalance (per squared unit)
+
+# --- Resource limits (DoS / accidental blow-up guards) -----------------------
+# Generous bounds for a real org; they only reject pathological inputs. The
+# client controls solve time and problem size, so these cap both.
+MAX_SOLVE_SECONDS = 60        # per /api/solve call
+MAX_SEATS = 20_000            # materialised planning entities per problem
+MAX_EMPLOYEES = 5_000         # problem facts per problem
+MAX_REQUEST_BYTES = 5_000_000  # request body ceiling (~5 MB)
+
+# Browser origins allowed to call the API. Dev and prod are both effectively
+# same-origin (Vite proxies /api in dev; FastAPI serves the SPA in prod), so
+# only the local dev server's direct origins need listing.
+ALLOWED_ORIGINS = [
+    "http://localhost:5173", "http://127.0.0.1:5173",
+    "http://localhost:8000", "http://127.0.0.1:8000",
+]

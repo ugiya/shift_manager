@@ -94,3 +94,35 @@ def test_validate_blocks_on_errors(client):
     bad["sites"] = []
     r = client.post("/api/validate", json={"requirements": bad, "assignments": {}}).json()
     assert r["score"] is None and r["errors"]
+
+
+# --- resource / input guards -------------------------------------------------
+
+@pytest.mark.parametrize("seconds", [0, 9999, -1])
+def test_solve_rejects_out_of_range_seconds(client, seconds):
+    r = client.post("/api/solve", json={"requirements": TINY, "seconds": seconds}).json()
+    assert r["score"] is None
+    assert any("seconds must be between" in e for e in r["errors"])
+
+
+def test_oversized_request_body_is_rejected(client):
+    bloated = copy.deepcopy(TINY)
+    bloated["employees"][0]["name"] = "x" * 5_000_001  # over MAX_REQUEST_BYTES
+    r = client.post("/api/solve", json={"requirements": bloated, "seconds": 3})
+    assert r.status_code == 413
+
+
+def test_validate_rejects_unknown_seat_id(client):
+    r = client.post("/api/validate",
+                    json={"requirements": TINY, "assignments": {"ghost-seat": None}}).json()
+    assert r["score"] is None
+    assert any("unknown seat id" in e for e in r["errors"])
+
+
+def test_validate_rejects_unknown_employee_id(client):
+    built = client.post("/api/build", json={"requirements": TINY}).json()
+    seat_id = built["dataset"]["seats"][0]["id"]
+    r = client.post("/api/validate",
+                    json={"requirements": TINY, "assignments": {seat_id: "ghost-emp"}}).json()
+    assert r["score"] is None
+    assert any("unknown" in e and "employee id" in e for e in r["errors"])

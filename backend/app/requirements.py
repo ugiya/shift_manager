@@ -10,11 +10,12 @@ flag) and demand.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 from pydantic import BaseModel, Field
 
-from .config import LEGAL_REST_MINUTES, NIGHT_REST_MINUTES, WEEKEND_WEEKDAYS
+from .config import (LEGAL_REST_MINUTES, MAX_EMPLOYEES, MAX_SEATS,
+                     NIGHT_REST_MINUTES, WEEKEND_WEEKDAYS)
 from .data import Dataset
 from .domain import Employee, Project, Role, ShiftType, Site, Team
 
@@ -63,8 +64,12 @@ class EmployeeIn(BaseModel):
     roles: list[str] = Field(default_factory=list)
     projects: list[str] = Field(default_factory=list)
     can_manage: bool = False
+    # --- Carry-over (ADR-0002): prior-week state that feeds this week's solve ---
     carryover_burden: int = 0
     worked_last_weekend: bool = False
+    prev_shift_end: str | None = None        # ISO datetime; R3/R6 across the week boundary
+    prev_shift_was_night: bool = False       # whether that last shift was a Night Shift
+    avoid_shift_ids: list[str] = Field(default_factory=list)  # negative Preferences (R10)
 
 
 class DemandIn(BaseModel):
@@ -92,6 +97,33 @@ def _dupes(ids: list[str]) -> list[str]:
     for i in ids:
         (dup if i in seen else seen).add(i)
     return sorted(dup)
+
+
+def _bad_datetime(s: str) -> bool:
+    try:
+        datetime.fromisoformat(s)
+        return False
+    except (ValueError, TypeError):
+        return True
+
+
+def _bad_date(s: str) -> bool:
+    try:
+        date.fromisoformat(s)
+        return False
+    except (ValueError, TypeError):
+        return True
+
+
+def _estimated_seats(req: RequirementsIn) -> int:
+    """Upper bound on materialised seats: per demand row, one manager seat plus
+    the crew total, for each selected day. Over-counts shifts shared across rows,
+    which is fine for a guard."""
+    total = 0
+    for d in req.demand:
+        crew_total = sum(c for roles in d.crew.values() for c in roles.values() if c > 0)
+        total += len(d.days) * (1 + crew_total)
+    return total
 
 
 def validate_requirements(req: RequirementsIn) -> tuple[list[str], list[str]]:
@@ -156,6 +188,9 @@ def validate_requirements(req: RequirementsIn) -> tuple[list[str], list[str]]:
                 errors.append(f"Employee {e.id!r} is on project {pid!r} which is not in their team.")
         if e.carryover_burden < 0:
             errors.append(f"Employee {e.id!r}: carry-over burden cannot be negative.")
+        if e.prev_shift_end is not None and _bad_datetime(e.prev_shift_end):
+            errors.append(f"Employee {e.id!r}: prev_shift_end {e.prev_shift_end!r} "
+                          f"is not a valid ISO datetime.")
         if not e.roles and not e.can_manage:
             warnings.append(f"Employee {e.id!r} has no role and cannot manage — unusable.")
 
@@ -182,6 +217,19 @@ def validate_requirements(req: RequirementsIn) -> tuple[list[str], list[str]]:
                     errors.append(f"{where} crew references unknown role {rid!r}.")
                 if count < 1:
                     errors.append(f"{where} crew count for {pid}/{rid} must be ≥ 1.")
+
+    # week start
+    if req.week_start is not None and _bad_date(req.week_start):
+        errors.append(f"week_start {req.week_start!r} is not a valid ISO date.")
+
+    # problem-size guards (resource exhaustion)
+    if len(req.employees) > MAX_EMPLOYEES:
+        errors.append(f"Too many employees: {len(req.employees)} exceeds the "
+                      f"limit of {MAX_EMPLOYEES}.")
+    est_seats = _estimated_seats(req)
+    if est_seats > MAX_SEATS:
+        errors.append(f"Problem too large: ~{est_seats} seats exceeds the "
+                      f"limit of {MAX_SEATS}.")
 
     # coverage warnings (only if no blocking errors so far for the entity)
     if not errors:
@@ -218,8 +266,12 @@ def to_dataset(req: RequirementsIn) -> Dataset:
     projects = [Project(p.id, p.name, p.team) for p in req.projects]
     employees = [
         Employee(e.id, e.name, e.team, frozenset(e.roles), frozenset(e.projects),
-                 can_manage=e.can_manage, carryover_burden=e.carryover_burden,
-                 worked_last_weekend=e.worked_last_weekend)
+                 can_manage=e.can_manage,
+                 avoid_shift_ids=frozenset(e.avoid_shift_ids),
+                 carryover_burden=e.carryover_burden,
+                 worked_last_weekend=e.worked_last_weekend,
+                 prev_shift_end=datetime.fromisoformat(e.prev_shift_end) if e.prev_shift_end else None,
+                 prev_shift_was_night=e.prev_shift_was_night)
         for e in req.employees
     ]
     demand = [
@@ -242,8 +294,12 @@ def dataset_to_requirements(ds: Dataset) -> dict:
         "employees": [{
             "id": e.id, "name": e.name, "team": e.team_id,
             "roles": sorted(e.role_ids), "projects": sorted(e.project_ids),
-            "can_manage": e.can_manage, "carryover_burden": e.carryover_burden,
+            "can_manage": e.can_manage,
+            "avoid_shift_ids": sorted(e.avoid_shift_ids),
+            "carryover_burden": e.carryover_burden,
             "worked_last_weekend": e.worked_last_weekend,
+            "prev_shift_end": e.prev_shift_end.isoformat() if e.prev_shift_end else None,
+            "prev_shift_was_night": e.prev_shift_was_night,
         } for e in ds.employees],
         "demand": [{
             "team": team_id, "shift_type": st_id,

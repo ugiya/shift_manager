@@ -101,8 +101,12 @@ export interface ReqEmployee {
   roles: string[];
   projects: string[];
   can_manage: boolean;
+  // Carry-over (ADR-0002): prior-week state that feeds this week's solve.
   carryover_burden: number;
   worked_last_weekend: boolean;
+  prev_shift_end: string | null; // ISO datetime; R3/R6 across the week boundary
+  prev_shift_was_night: boolean;
+  avoid_shift_ids: string[]; // negative preferences (R10); round-tripped, not yet edited here
 }
 export interface ReqDemand {
   team: string;

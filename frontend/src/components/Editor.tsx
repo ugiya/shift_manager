@@ -1,4 +1,4 @@
-import type { RequirementsDoc } from "../types";
+import type { ReqEmployee, RequirementsDoc } from "../types";
 import { DAY_NAMES } from "../types";
 import {
   nextId,
@@ -132,13 +132,15 @@ export default function Editor({ req, onChange, errors, warnings }: Props) {
       <Section title="Employees" testid="add-employee"
         onAdd={() => req.teams[0] && set({ employees: [...req.employees, {
           id: nextId("emp", ids(req.employees)), name: "New person", team: req.teams[0].id,
-          roles: [], projects: [], can_manage: false, carryover_burden: 0, worked_last_weekend: false }] })}>
+          roles: [], projects: [], can_manage: false, carryover_burden: 0, worked_last_weekend: false,
+          prev_shift_end: null, prev_shift_was_night: false, avoid_shift_ids: [] }] })}>
         {req.employees.map((e) => {
           const teamProjects = projectsForTeam(req, e.team);
           const toggle = (key: "roles" | "projects", id: string) => {
             const has = e[key].includes(id);
             const list = has ? e[key].filter((x) => x !== id) : [...e[key], id];
-            set({ employees: upd(req.employees, e.id, { [key]: list } as any) });
+            const patch: Partial<ReqEmployee> = key === "roles" ? { roles: list } : { projects: list };
+            set({ employees: upd(req.employees, e.id, patch) });
           };
           return (
             <Row key={e.id} entity="employee" id={e.id}
@@ -161,6 +163,13 @@ export default function Editor({ req, onChange, errors, warnings }: Props) {
               </label>
               <label className="chk"><input type="checkbox" checked={e.worked_last_weekend}
                 onChange={(ev) => set({ employees: upd(req.employees, e.id, { worked_last_weekend: ev.target.checked }) })} /> worked last wknd</label>
+              <label className="hours" title="End of this person's last shift in the prior week (R3/R6 across the boundary)">prev end
+                <input className="in" type="datetime-local" data-testid="employee-prevend"
+                  value={e.prev_shift_end ? e.prev_shift_end.slice(0, 16) : ""}
+                  onChange={(ev) => set({ employees: upd(req.employees, e.id, { prev_shift_end: ev.target.value || null }) })} />
+              </label>
+              <label className="chk"><input type="checkbox" checked={e.prev_shift_was_night}
+                onChange={(ev) => set({ employees: upd(req.employees, e.id, { prev_shift_was_night: ev.target.checked }) })} /> prev night</label>
             </Row>
           );
         })}

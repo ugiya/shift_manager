@@ -10,16 +10,19 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .analysis import derive_flags
+from .config import ALLOWED_ORIGINS, MAX_REQUEST_BYTES, MAX_SOLVE_SECONDS
 from .data import build_lookup, build_schedule, default_dataset
 from .requirements import (RequirementsIn, dataset_to_requirements, to_dataset,
                            validate_requirements)
-from .serialize import apply_assignments, assignments_of, dataset_payload
+from .serialize import (apply_assignments, assignments_of, dataset_payload,
+                        validate_assignments)
 from .solver import score_breakdown, solve
 
 
@@ -32,8 +35,17 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Shift Scheduler", lifespan=lifespan)
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+    CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_methods=["*"], allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def limit_body_size(request: Request, call_next):
+    """Reject oversized bodies before they are read/parsed."""
+    cl = request.headers.get("content-length")
+    if cl is not None and cl.isdigit() and int(cl) > MAX_REQUEST_BYTES:
+        return JSONResponse(status_code=413, content={"detail": "Request body too large."})
+    return await call_next(request)
 
 
 class BuildRequest(BaseModel):
@@ -81,6 +93,9 @@ def post_build(req: BuildRequest) -> dict:
 
 @app.post("/api/solve")
 def post_solve(req: SolveRequest) -> dict:
+    if req.seconds is not None and not (1 <= req.seconds <= MAX_SOLVE_SECONDS):
+        return {"errors": [f"seconds must be between 1 and {MAX_SOLVE_SECONDS}."],
+                "warnings": [], "dataset": None, "assignments": {}, "score": None, "flags": []}
     mat, errors, warnings = _materialize(req.requirements)
     if mat is None:
         return {"errors": errors, "warnings": warnings, "dataset": None,
@@ -103,7 +118,12 @@ def post_validate(req: ValidateRequest) -> dict:
         return {"errors": errors, "warnings": warnings, "dataset": None,
                 "score": None, "flags": []}
     ds, schedule, lookup = mat
-    apply_assignments(schedule, req.assignments, {e.id: e for e in ds.employees})
+    employees_by_id = {e.id: e for e in ds.employees}
+    assignment_errors = validate_assignments(schedule, req.assignments, employees_by_id)
+    if assignment_errors:
+        return {"errors": assignment_errors, "warnings": warnings, "dataset": None,
+                "score": None, "flags": []}
+    apply_assignments(schedule, req.assignments, employees_by_id)
     return {
         "errors": [], "warnings": warnings,
         "dataset": dataset_payload(ds, schedule),

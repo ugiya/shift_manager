@@ -76,6 +76,9 @@ def _no_teams(d): d["teams"] = []
 def _bad_hours(d): d["shift_types"][0]["start"] = 25
 def _equal_hours(d): d["shift_types"][0]["end"] = 8
 def _neg_carry(d): d["employees"][0]["carryover_burden"] = -2
+def _bad_prev_end(d): d["employees"][0]["prev_shift_end"] = "not-a-datetime"
+def _bad_week_start(d): d["week_start"] = "2026-13-99"
+def _too_many_seats(d): d["demand"][0]["crew"] = {"p": {"dev": 20001}}
 
 
 def _emp_project_not_in_team(d):
@@ -103,6 +106,9 @@ ERROR_CASES = [
     (_bad_hours, "0–23"),
     (_equal_hours, "must differ"),
     (_neg_carry, "cannot be negative"),
+    (_bad_prev_end, "valid ISO datetime"),
+    (_bad_week_start, "valid ISO date"),
+    (_too_many_seats, "Problem too large"),
 ]
 
 
@@ -156,3 +162,15 @@ def test_to_dataset_builds_solvable_tiny_org():
     assert len(sched.shifts) == 1
     assert len(sched.seats) == 2
     assert all(seat.eligible for seat in sched.seats)
+
+
+def test_to_dataset_carries_prev_shift_and_preferences():
+    from datetime import datetime
+    d = copy.deepcopy(BASE)
+    d["employees"][0]["prev_shift_end"] = "2026-06-20T23:00"
+    d["employees"][0]["prev_shift_was_night"] = True
+    d["employees"][0]["avoid_shift_ids"] = ["shift-x"]
+    e = to_dataset(RequirementsIn(**d)).employees[0]
+    assert e.prev_shift_end == datetime(2026, 6, 20, 23, 0)
+    assert e.prev_shift_was_night is True
+    assert e.avoid_shift_ids == frozenset({"shift-x"})
