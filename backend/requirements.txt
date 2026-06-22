@@ -1,0 +1,8 @@
+# Backend runtime + test deps. Install into a Python 3.12 venv (timefold/JPype
+# have no wheels for 3.13+). Requires a JDK 17+ at runtime (JAVA_HOME).
+fastapi>=0.138
+uvicorn[standard]>=0.49
+pydantic>=2
+timefold==1.24.0b0
+pytest>=9
+httpx>=0.28
