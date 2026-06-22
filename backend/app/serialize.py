@@ -75,6 +75,22 @@ def assignments_of(schedule: Schedule) -> dict[str, str | None]:
     return {s.id: (s.employee.id if s.employee else None) for s in schedule.seats}
 
 
+def validate_assignments(schedule: Schedule, assignments: dict[str, str | None],
+                         employees_by_id: dict) -> list[str]:
+    """Errors for an assignments map: every key must be a real seat id and every
+    non-null value a real employee id. Catches stale client state instead of
+    silently masking an unknown employee as 'unfilled'."""
+    errors: list[str] = []
+    seat_ids = {s.id for s in schedule.seats}
+    for seat_id, emp_id in assignments.items():
+        if seat_id not in seat_ids:
+            errors.append(f"Assignment references unknown seat id {seat_id!r}.")
+        if emp_id is not None and emp_id not in employees_by_id:
+            errors.append(f"Assignment for seat {seat_id!r} references unknown "
+                          f"employee id {emp_id!r}.")
+    return errors
+
+
 def apply_assignments(schedule: Schedule, assignments: dict[str, str | None],
                       employees_by_id: dict) -> Schedule:
     """Set each seat's employee from a {seat_id: employee_id|null} map.
