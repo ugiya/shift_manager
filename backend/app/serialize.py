@@ -15,7 +15,7 @@ def dataset_payload(dataset: Dataset, schedule: Schedule) -> dict:
         "days": [d for d in _week_days(dataset)],
         "roles": [{"id": r.id, "name": r.name} for r in dataset.roles],
         "teams": [{"id": t.id, "name": t.name, "site_id": t.site_id} for t in dataset.teams],
-        "projects": [{"id": p.id, "name": p.name, "team_id": p.team_id} for p in dataset.projects],
+        "projects": [{"id": p.id, "name": p.name, "team_ids": sorted(p.team_ids)} for p in dataset.projects],
         "shift_types": [{"id": st.id, "name": st.name, "is_night": st.is_night,
                          "start_hour": st.start_hour, "end_hour": st.end_hour}
                         for st in dataset.shift_types],
@@ -26,6 +26,8 @@ def dataset_payload(dataset: Dataset, schedule: Schedule) -> dict:
             "avoid_shift_ids": sorted(e.avoid_shift_ids),
             "carryover_burden": e.carryover_burden,
             "worked_last_weekend": e.worked_last_weekend,
+            "prev_shift_end": e.prev_shift_end.isoformat() if e.prev_shift_end else None,
+            "prev_shift_was_night": e.prev_shift_was_night,
         } for e in dataset.employees],
         "shifts": [_shift_payload(s) for s in _sorted_shifts(schedule)],
         "seats": [_seat_payload(s, lookup) for s in schedule.seats],
@@ -79,7 +81,13 @@ def validate_assignments(schedule: Schedule, assignments: dict[str, str | None],
                          employees_by_id: dict) -> list[str]:
     """Errors for an assignments map: every key must be a real seat id and every
     non-null value a real employee id. Catches stale client state instead of
-    silently masking an unknown employee as 'unfilled'."""
+    silently masking an unknown employee as 'unfilled'.
+
+    Snapshot semantics (not patch): the map is the *complete* desired state. The
+    service is stateless — each call rebuilds the Schedule with every seat empty and
+    then applies the map — so a seat that is absent (or null) is intentionally
+    unassigned. There is no prior server state to "leave unchanged", which is why a
+    missing seat id is not an error: best-effort scheduling allows unfilled seats."""
     errors: list[str] = []
     seat_ids = {s.id for s in schedule.seats}
     for seat_id, emp_id in assignments.items():
@@ -94,6 +102,9 @@ def validate_assignments(schedule: Schedule, assignments: dict[str, str | None],
 def apply_assignments(schedule: Schedule, assignments: dict[str, str | None],
                       employees_by_id: dict) -> Schedule:
     """Set each seat's employee from a {seat_id: employee_id|null} map.
+
+    Snapshot, not patch: a seat absent from the map is left unassigned (see
+    `validate_assignments`). Send the full desired state every call.
 
     Employees that are not in a seat's eligible list are still applied (that is an
     Exceptional Assignment from an Override) -- re-validation will flag them.

@@ -50,14 +50,15 @@ def test_site_has_at_least_one_team(site):
 @pytest.mark.parametrize("team", DS.teams, ids=lambda t: t.id)
 def test_team_is_well_formed(team):
     assert team.site_id in SITE_IDS
-    assert any(p.team_id == team.id for p in DS.projects), f"{team.id} has no project"
+    assert any(team.id in p.team_ids for p in DS.projects), f"{team.id} has no project"
     mgrs = [e for e in DS.employees if e.team_id == team.id and e.can_manage]
     assert mgrs, f"{team.id} has no shift-manager-eligible employee"
 
 
 @pytest.mark.parametrize("project", DS.projects, ids=lambda p: p.id)
-def test_project_belongs_to_existing_team(project):
-    assert project.team_id in TEAM_IDS
+def test_project_belongs_to_existing_teams(project):
+    assert project.team_ids, f"{project.id} belongs to no team"
+    assert project.team_ids <= TEAM_IDS
 
 
 @pytest.mark.parametrize("emp", DS.employees, ids=lambda e: e.id)
@@ -65,9 +66,9 @@ def test_employee_is_well_formed(emp):
     assert emp.team_id in TEAM_IDS
     assert emp.role_ids <= ROLE_IDS, f"{emp.id} has unknown role"
     assert emp.project_ids <= PROJECT_IDS, f"{emp.id} has unknown project"
-    # every project the employee is on belongs to that employee's team
+    # every project the employee is on runs in that employee's team (ADR-0003)
     for pid in emp.project_ids:
-        assert PROJECT_BY_ID[pid].team_id == emp.team_id
+        assert emp.team_id in PROJECT_BY_ID[pid].team_ids
     # everyone has a function: a worker role and/or shift-manager capability
     assert emp.role_ids or emp.can_manage
     assert emp.carryover_burden >= 0
@@ -90,6 +91,7 @@ def test_seat_eligibility_is_correct(seat):
         for e in seat.eligible:
             assert seat.project_id in e.project_ids, f"{e.id} not on {seat.project_id}"
             assert seat.role_id in e.role_ids, f"{e.id} lacks role {seat.role_id}"
+            assert e.team_id == seat.team_id, f"{e.id} is not in the seat's team (ADR-0003)"
     else:  # manager seat
         assert seat.project_id is None and seat.role_id is None
         for e in seat.eligible:

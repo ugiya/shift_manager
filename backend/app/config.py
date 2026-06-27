@@ -35,6 +35,12 @@ MAX_SOLVE_SECONDS = 60        # per /api/solve call
 MAX_SEATS = 20_000            # materialised planning entities per problem
 MAX_EMPLOYEES = 5_000         # problem facts per problem
 MAX_REQUEST_BYTES = 5_000_000  # request body ceiling (~5 MB)
+# Cap on client-supplied rolling burden. R9 squares (carryover_burden + this week),
+# so an unbounded client value could overflow the (32-bit) soft score or swamp the
+# other soft rules. Coverage (R4) is on a higher score level, so this is purely an
+# overflow / soft-domination guard, not what protects coverage. A real deployment
+# should decay/window the rolling count rather than sum forever.
+MAX_CARRYOVER_BURDEN = 1_000
 
 # Browser origins allowed to call the API. Dev and prod are both effectively
 # same-origin (Vite proxies /api in dev; FastAPI serves the SPA in prod), so

@@ -206,7 +206,7 @@ def default_dataset() -> Dataset:
         for t in site_spec["teams"]:
             teams.append(Team(t["id"], t["name"], site_spec["id"]))
             for pid, pname in t["projects"]:
-                projects.append(Project(pid, pname, t["id"]))
+                projects.append(Project(pid, pname, frozenset({t["id"]})))
             for eid, ename, roles, projs, can_manage, carry in t["employees"]:
                 employees.append(_emp(eid, ename, roles, projs, t["id"], can_manage, **carry))
             for st_id, weekdays, crew in t["demand"]:
@@ -223,8 +223,12 @@ def _mk_shift(shift_id: str, st: ShiftType, day: date, team_id: str, site_id: st
     return Shift(shift_id, st, team_id, site_id, start, end)
 
 
-def _eligible_workers(employees, project_id, role_id):
-    return [e for e in employees if project_id in e.project_ids and role_id in e.role_ids]
+def _eligible_workers(employees, project_id, role_id, team_id):
+    # ADR-0003: a worker is eligible only for seats in their OWN team. For a project
+    # that runs across teams/sites, each site staffs its own seats; a cross-site fill
+    # is an Exceptional Assignment reachable only via a manual override.
+    return [e for e in employees
+            if project_id in e.project_ids and role_id in e.role_ids and e.team_id == team_id]
 
 
 def _eligible_managers(employees, team_id):
@@ -262,7 +266,7 @@ def build_schedule(dataset: Dataset) -> Schedule:
                         seats.append(Seat(
                             f"seat-{shift_id}-{project_id}-{role_id}-{n}",
                             "worker", shift, team_id, project_id, role_id,
-                            eligible=_eligible_workers(dataset.employees, project_id, role_id)))
+                            eligible=_eligible_workers(dataset.employees, project_id, role_id, team_id)))
 
     return Schedule(list(dataset.employees), list(shifts.values()), seats)
 

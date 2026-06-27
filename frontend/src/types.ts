@@ -1,7 +1,7 @@
 export interface NamedRef { id: string; name: string }
 
 export interface Team { id: string; name: string; site_id: string }
-export interface Project { id: string; name: string; team_id: string }
+export interface Project { id: string; name: string; team_ids: string[] } // ADR-0003: may span teams/sites
 export interface ShiftType {
   id: string; name: string; is_night: boolean; start_hour: number; end_hour: number;
 }
@@ -16,6 +16,8 @@ export interface Employee {
   avoid_shift_ids: string[];
   carryover_burden: number;
   worked_last_weekend: boolean;
+  prev_shift_end: string | null; // local-naive ISO datetime; R3/R6 across the week boundary
+  prev_shift_was_night: boolean;
 }
 
 export interface Shift {
@@ -58,11 +60,17 @@ export interface Dataset {
 }
 
 export interface ConstraintTotal {
-  name: string; rule: string; kind: "hard" | "soft"; match_count: number; score: string;
+  name: string;
+  rule: string;
+  kind: "hard" | "soft";            // domain taxonomy: Infeasibility | Compromise
+  level: "hard" | "medium" | "soft"; // score level the penalty lands on
+  match_count: number;
+  score: string;
 }
 export interface ScoreInfo {
   score: string;
   hard_score: number;
+  medium_score: number;             // demand coverage (R4) — above all soft rules
   soft_score: number;
   feasible: boolean;
   constraints: ConstraintTotal[];
@@ -93,7 +101,7 @@ export interface ReqSite { id: string; name: string }
 export interface ReqRole { id: string; name: string }
 export interface ReqShiftType { id: string; name: string; start: number; end: number; is_night: boolean }
 export interface ReqTeam { id: string; name: string; site: string }
-export interface ReqProject { id: string; name: string; team: string }
+export interface ReqProject { id: string; name: string; teams: string[] } // ADR-0003: one-or-more teams
 export interface ReqEmployee {
   id: string;
   name: string;
@@ -101,10 +109,17 @@ export interface ReqEmployee {
   roles: string[];
   projects: string[];
   can_manage: boolean;
+  // HR metadata (round-trip only; only `status` affects scheduling — Phase 2).
+  status: string; // "active" | "on-leave" | "inactive"; only active is scheduled
+  employee_number: string | null;
+  email: string | null;
+  phone: string | null;
+  hire_date: string | null;
+  notes: string | null;
   // Carry-over (ADR-0002): prior-week state that feeds this week's solve.
   carryover_burden: number;
   worked_last_weekend: boolean;
-  prev_shift_end: string | null; // ISO datetime; R3/R6 across the week boundary
+  prev_shift_end: string | null; // local-naive ISO datetime; R3/R6 across the week boundary
   prev_shift_was_night: boolean;
   avoid_shift_ids: string[]; // negative preferences (R10); round-tripped, not yet edited here
 }
@@ -126,6 +141,26 @@ export interface RequirementsDoc {
   config?: { legal_rest_hours: number; night_rest_hours: number; weekend_days: string[] };
 }
 
+// Per-employee carry-over fields (ADR-0002). Shapes match ReqEmployee's carry-over
+// fields so each entry can be pasted onto / replayed for next week's employee.
+export interface Carryover {
+  carryover_burden: number;
+  worked_last_weekend: boolean;
+  prev_shift_end: string | null;
+  prev_shift_was_night: boolean;
+}
+
+// Self-describing seed envelope for the *next* week, derived from an accepted
+// Schedule. Carries week identity (so a wrong-week replay is rejected) and whether
+// the source schedule was feasible. Submit it back verbatim as a request's
+// `carryover_seed` to seed the following week.
+export interface CarryoverSeed {
+  source_week_start: string | null;
+  target_week_start: string | null;
+  source_feasible: boolean;
+  employees: Record<string, Carryover>;
+}
+
 export interface BuildResult {
   errors: string[];
   warnings: string[];
@@ -135,11 +170,13 @@ export interface SolveResponse extends BuildResult {
   assignments: Assignments;
   score: ScoreInfo | null;
   flags: Flag[];
+  next_carryover: CarryoverSeed;
 }
 export interface ValidateResponse extends BuildResult {
   assignments: Assignments;
   score: ScoreInfo | null;
   flags: Flag[];
+  next_carryover: CarryoverSeed;
 }
 
 export const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];

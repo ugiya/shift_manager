@@ -80,8 +80,25 @@ def test_soft_only_scenarios_are_feasible_but_report_a_compromise(builder):
     seats, employees = builder()
     score, flags = evaluate(seats, employees)
     assert score.hard_score == 0
-    assert score.soft_score < 0
+    if builder is s_understaffed_soft:
+        # Coverage (R4) is a Compromise scored on the MEDIUM level, not soft.
+        assert score.medium_score < 0 and score.soft_score == 0
+    else:
+        assert score.soft_score < 0 and score.medium_score == 0
     assert [f for f in flags if f["kind"] == "soft"] != []
+
+
+def test_coverage_outranks_fairness_regardless_of_carryover():
+    """R4 coverage sits on MEDIUM, above R9 fairness (soft), so filling a burden
+    seat always beats leaving it empty — even at a huge carry-over burden that
+    under the old single-soft-level model made R9 outweigh R4 (the reproduced bug)."""
+    a = emp("a", carryover_burden=1000)
+    burden = shift_h(5 * 24 + 22, 8, night=True, id="fn")   # Friday night = weekend+night
+    assigned, _ = evaluate([seat(burden, [a], a)], [a])
+    unfilled, _ = evaluate([seat(burden, [a], None)], [a])
+    assert assigned.medium_score == 0 and unfilled.medium_score < 0
+    # higher (hard, medium) is better; coverage must win on the medium level
+    assert (assigned.hard_score, assigned.medium_score) > (unfilled.hard_score, unfilled.medium_score)
 
 
 def test_constraint_metadata_is_well_formed():
@@ -89,7 +106,10 @@ def test_constraint_metadata_is_well_formed():
     assert CONSTRAINTS, "registry must not be empty"
     for name, meta in CONSTRAINTS.items():
         assert meta["kind"] in ("hard", "soft"), name
+        assert meta["level"] in ("hard", "medium", "soft"), name
         assert meta["rule"]
+    # exactly one Compromise scored on the medium level: demand coverage (R4)
+    assert [m["rule"] for m in CONSTRAINTS.values() if m["level"] == "medium"] == ["R4"]
 
 
 def test_score_breakdown_shape_and_known_constraints(default_solution):
@@ -97,8 +117,10 @@ def test_score_breakdown_shape_and_known_constraints(default_solution):
     from app.constraints import CONSTRAINTS
     from app.solver import score_breakdown
     bd = score_breakdown(solved)
-    assert set(bd) >= {"score", "hard_score", "soft_score", "feasible", "constraints"}
+    assert set(bd) >= {"score", "hard_score", "medium_score", "soft_score",
+                       "feasible", "constraints"}
     assert isinstance(bd["constraints"], list)
     for c in bd["constraints"]:
         assert c["name"] in CONSTRAINTS, f"unmapped constraint surfaced: {c['name']}"
         assert c["kind"] in ("hard", "soft")
+        assert c["level"] in ("hard", "medium", "soft")

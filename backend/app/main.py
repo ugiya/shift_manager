@@ -17,10 +17,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .analysis import derive_flags
+from .carryover import carryover_seed, empty_carryover_seed
 from .config import ALLOWED_ORIGINS, MAX_REQUEST_BYTES, MAX_SOLVE_SECONDS
 from .data import build_lookup, build_schedule, default_dataset
-from .requirements import (RequirementsIn, dataset_to_requirements, to_dataset,
-                           validate_requirements)
+from .requirements import (CarryoverSeedIn, RequirementsIn, apply_carryover_seed,
+                           dataset_to_requirements, to_dataset, validate_requirements)
 from .serialize import (apply_assignments, assignments_of, dataset_payload,
                         validate_assignments)
 from .solver import score_breakdown, solve
@@ -50,21 +51,34 @@ async def limit_body_size(request: Request, call_next):
 
 class BuildRequest(BaseModel):
     requirements: RequirementsIn
+    carryover_seed: CarryoverSeedIn | None = None
 
 
 class SolveRequest(BaseModel):
     requirements: RequirementsIn
     seconds: int | None = None
+    carryover_seed: CarryoverSeedIn | None = None
 
 
 class ValidateRequest(BaseModel):
     requirements: RequirementsIn
     assignments: dict[str, str | None]
+    carryover_seed: CarryoverSeedIn | None = None
 
 
-def _materialize(req: RequirementsIn):
-    """(dataset, schedule, lookup) or None if there are blocking errors."""
+def _materialize(req: RequirementsIn, seed: CarryoverSeedIn | None = None):
+    """(dataset, schedule, lookup) or None if there are blocking errors.
+
+    An optional carry-over seed (ADR-0002) is replayed onto the employees first,
+    after a week-identity check, so the merged values pass normal validation.
+    """
+    seed_warnings: list[str] = []
+    if seed is not None:
+        seed_errors, seed_warnings = apply_carryover_seed(req, seed)
+        if seed_errors:
+            return None, seed_errors, seed_warnings
     errors, warnings = validate_requirements(req)
+    warnings = seed_warnings + warnings
     if errors:
         return None, errors, warnings
     ds = to_dataset(req)
@@ -84,7 +98,7 @@ def get_requirements() -> dict:
 
 @app.post("/api/build")
 def post_build(req: BuildRequest) -> dict:
-    mat, errors, warnings = _materialize(req.requirements)
+    mat, errors, warnings = _materialize(req.requirements, req.carryover_seed)
     if mat is None:
         return {"errors": errors, "warnings": warnings, "dataset": None}
     ds, schedule, _lookup = mat
@@ -95,41 +109,47 @@ def post_build(req: BuildRequest) -> dict:
 def post_solve(req: SolveRequest) -> dict:
     if req.seconds is not None and not (1 <= req.seconds <= MAX_SOLVE_SECONDS):
         return {"errors": [f"seconds must be between 1 and {MAX_SOLVE_SECONDS}."],
-                "warnings": [], "dataset": None, "assignments": {}, "score": None, "flags": []}
-    mat, errors, warnings = _materialize(req.requirements)
+                "warnings": [], "dataset": None, "assignments": {}, "score": None,
+                "flags": [], "next_carryover": empty_carryover_seed()}
+    mat, errors, warnings = _materialize(req.requirements, req.carryover_seed)
     if mat is None:
-        return {"errors": errors, "warnings": warnings, "dataset": None,
-                "assignments": {}, "score": None, "flags": []}
+        return {"errors": errors, "warnings": warnings, "dataset": None, "assignments": {},
+                "score": None, "flags": [], "next_carryover": empty_carryover_seed()}
     ds, schedule, lookup = mat
     solved = solve(schedule, spent=(req.seconds or 8), unimproved=2)
+    score = score_breakdown(solved)
     return {
         "errors": [], "warnings": warnings,
         "dataset": dataset_payload(ds, solved),
         "assignments": assignments_of(solved),
-        "score": score_breakdown(solved),
+        "score": score,
         "flags": derive_flags(solved, lookup),
+        "next_carryover": carryover_seed(solved, ds.week_start, feasible=score["feasible"]),
     }
 
 
 @app.post("/api/validate")
 def post_validate(req: ValidateRequest) -> dict:
-    mat, errors, warnings = _materialize(req.requirements)
+    mat, errors, warnings = _materialize(req.requirements, req.carryover_seed)
     if mat is None:
-        return {"errors": errors, "warnings": warnings, "dataset": None,
-                "score": None, "flags": []}
+        return {"errors": errors, "warnings": warnings, "dataset": None, "assignments": {},
+                "score": None, "flags": [], "next_carryover": empty_carryover_seed()}
     ds, schedule, lookup = mat
     employees_by_id = {e.id: e for e in ds.employees}
     assignment_errors = validate_assignments(schedule, req.assignments, employees_by_id)
     if assignment_errors:
         return {"errors": assignment_errors, "warnings": warnings, "dataset": None,
-                "score": None, "flags": []}
+                "assignments": {}, "score": None, "flags": [],
+                "next_carryover": empty_carryover_seed()}
     apply_assignments(schedule, req.assignments, employees_by_id)
+    score = score_breakdown(schedule)
     return {
         "errors": [], "warnings": warnings,
         "dataset": dataset_payload(ds, schedule),
         "assignments": assignments_of(schedule),
-        "score": score_breakdown(schedule),
+        "score": score,
         "flags": derive_flags(schedule, lookup),
+        "next_carryover": carryover_seed(schedule, ds.week_start, feasible=score["feasible"]),
     }
 
 

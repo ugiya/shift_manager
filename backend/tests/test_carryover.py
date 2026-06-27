@@ -53,3 +53,36 @@ def test_carryover_burden_alone_raises_nothing():
     _score, flags = evaluate([seat(sh, [a], a)], employees=[a, b])
     # high carry-over with no fresh burden imbalance shouldn't, by itself, flag
     assert "R9" not in soft_rules(flags)
+
+
+def test_prev_shift_overlapping_current_is_a_hard_cross_boundary_overlap():
+    """A prior-week shift ending AFTER a current shift starts (negative gap) is a
+    cross-boundary overlap: hard R3. R1 can't catch it — last week's shift isn't a
+    Seat in this Schedule. (Reproduced blocker #1.)"""
+    a = emp("a", prev_shift_end=BASE + timedelta(hours=6))   # last week ended Sun 06:00
+    sh = shift_h(2, 6, id="s")                               # current starts Sun 02:00
+    score, flags = evaluate([seat(sh, [a], a)], [a])
+    assert score.hard_score < 0
+    assert "R3" in hard_rules(flags)
+    assert "Overlaps" in next(f["detail"] for f in flags if f["rule"] == "R3")
+
+
+def test_prev_night_overlap_also_flags_soft_recovery():
+    a = emp("a", prev_shift_was_night=True, prev_shift_end=BASE + timedelta(hours=6))
+    sh = shift_h(2, 6, id="s")
+    score, flags = evaluate([seat(sh, [a], a)], [a])
+    assert "R3" in hard_rules(flags)     # the overlap is hard
+    assert "R6" in soft_rules(flags)     # and a night-recovery compromise
+
+
+def test_carryover_rest_is_per_seat_and_matches_the_authoritative_score():
+    """Parity (#5): constraints (Timefold) and analysis both pair last week's shift
+    with EACH current-week seat. Two current shifts within legal rest of the prior
+    end => 2 carry-over R3 + 1 within-week R3, and the hard score counts the same 3."""
+    a = emp("a", prev_shift_end=BASE)        # last week ended Sun 00:00
+    s1 = shift_h(2, 3, id="s1")              # Sun 02:00-05:00 (gap 2h from prev)
+    s2 = shift_h(6, 3, id="s2")              # Sun 06:00-09:00 (gap 6h from prev)
+    score, flags = evaluate([seat(s1, [a], a), seat(s2, [a], a)], [a])
+    r3_hard = [f for f in flags if f["rule"] == "R3" and f["kind"] == "hard"]
+    assert len(r3_hard) == 3
+    assert score.hard_score == -3           # analysis flag count == Timefold hard matches

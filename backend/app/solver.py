@@ -64,17 +64,19 @@ def score_breakdown(problem: Schedule) -> dict:
     constraints = []
     for ca in analysis.constraint_analyses:
         name = str(ca.constraint_name)
-        meta = CONSTRAINTS.get(name, {"kind": "soft", "rule": "?"})
+        meta = CONSTRAINTS.get(name, {"kind": "soft", "level": "soft", "rule": "?"})
         constraints.append({
             "name": name,
             "rule": meta["rule"],
             "kind": meta["kind"],
+            "level": meta.get("level", meta["kind"]),
             "match_count": int(ca.match_count),
             "score": str(ca.score),
         })
     return {
         "score": str(score),
         "hard_score": score.hard_score,
+        "medium_score": score.medium_score,
         "soft_score": score.soft_score,
         "feasible": score.hard_score >= 0,
         "constraints": constraints,

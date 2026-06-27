@@ -15,7 +15,7 @@ BASE = {
     "roles": [{"id": "dev", "name": "Dev"}],
     "shift_types": [{"id": "m", "name": "Morning", "start": 8, "end": 16, "is_night": False}],
     "teams": [{"id": "t", "name": "T", "site": "s"}],
-    "projects": [{"id": "p", "name": "P", "team": "t"}],
+    "projects": [{"id": "p", "name": "P", "teams": ["t"]}],
     "employees": [{"id": "e", "name": "E", "team": "t", "roles": ["dev"],
                    "projects": ["p"], "can_manage": True}],
     "demand": [{"team": "t", "shift_type": "m", "days": ["Sun"], "crew": {"p": {"dev": 1}}}],
@@ -59,7 +59,7 @@ def _mut(fn):
 
 
 def _set_team_bad_site(d): d["teams"][0]["site"] = "nope"
-def _set_project_bad_team(d): d["projects"][0]["team"] = "nope"
+def _set_project_bad_team(d): d["projects"][0]["teams"] = ["nope"]
 def _set_emp_bad_team(d): d["employees"][0]["team"] = "nope"
 def _set_emp_bad_role(d): d["employees"][0]["roles"] = ["ghost"]
 def _set_emp_bad_project(d): d["employees"][0]["projects"] = ["ghost"]
@@ -77,6 +77,7 @@ def _bad_hours(d): d["shift_types"][0]["start"] = 25
 def _equal_hours(d): d["shift_types"][0]["end"] = 8
 def _neg_carry(d): d["employees"][0]["carryover_burden"] = -2
 def _bad_prev_end(d): d["employees"][0]["prev_shift_end"] = "not-a-datetime"
+def _tz_prev_end(d): d["employees"][0]["prev_shift_end"] = "2026-06-20T23:00:00+03:00"
 def _bad_week_start(d): d["week_start"] = "2026-13-99"
 def _too_many_seats(d): d["demand"][0]["crew"] = {"p": {"dev": 20001}}
 
@@ -92,7 +93,7 @@ ERROR_CASES = [
     (_set_emp_bad_team, "unknown team"),
     (_set_emp_bad_role, "unknown role"),
     (_set_emp_bad_project, "unknown project"),
-    (_emp_project_not_in_team, "not in their team"),
+    (_emp_project_not_in_team, "does not run in their team"),
     (_set_demand_bad_team, "unknown team"),
     (_set_demand_bad_st, "unknown shift type"),
     (_set_demand_no_days, "no days"),
@@ -107,6 +108,7 @@ ERROR_CASES = [
     (_equal_hours, "must differ"),
     (_neg_carry, "cannot be negative"),
     (_bad_prev_end, "valid ISO datetime"),
+    (_tz_prev_end, "timezone-naive"),
     (_bad_week_start, "valid ISO date"),
     (_too_many_seats, "Problem too large"),
 ]
@@ -174,3 +176,14 @@ def test_to_dataset_carries_prev_shift_and_preferences():
     assert e.prev_shift_end == datetime(2026, 6, 20, 23, 0)
     assert e.prev_shift_was_night is True
     assert e.avoid_shift_ids == frozenset({"shift-x"})
+
+
+@pytest.mark.parametrize("aware", ["2026-06-20T23:00:00+03:00", "2026-06-20T23:00:00Z"])
+def test_to_dataset_rejects_timezone_aware_prev_shift_end(aware):
+    """Defence in depth (independent of validate_requirements): conversion itself
+    refuses a tz-aware prev_shift_end — including a trailing 'Z' — so a direct
+    to_dataset caller fails loudly here instead of crashing the naive solve path."""
+    d = copy.deepcopy(BASE)
+    d["employees"][0]["prev_shift_end"] = aware
+    with pytest.raises(ValueError, match="naive"):
+        to_dataset(RequirementsIn(**d))

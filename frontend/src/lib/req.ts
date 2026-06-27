@@ -13,7 +13,7 @@ export function nextId(prefix: string, existing: string[]): string {
 }
 
 export function projectsForTeam(req: RequirementsDoc, teamId: string): ReqProject[] {
-  return req.projects.filter((p) => p.team === teamId);
+  return req.projects.filter((p) => p.teams.includes(teamId));
 }
 
 // --- reference checks: an entity referenced elsewhere can't be deleted ------
@@ -33,7 +33,7 @@ export function shiftTypeReferenced(req: RequirementsDoc, stId: string): boolean
 
 export function teamReferenced(req: RequirementsDoc, teamId: string): boolean {
   return (
-    req.projects.some((p) => p.team === teamId) ||
+    req.projects.some((p) => p.teams.includes(teamId)) ||
     req.employees.some((e) => e.team === teamId) ||
     req.demand.some((d) => d.team === teamId)
   );

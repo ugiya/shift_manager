@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from timefold.solver.score import (ConstraintCollectors, ConstraintFactory, Constraint,
-                                    HardSoftScore, Joiners, constraint_provider)
+                                    HardMediumSoftScore, Joiners, constraint_provider)
 
 from .config import (DAYS_IN_WEEK, LEGAL_REST_MINUTES, NIGHT_REST_MINUTES,
                      W_CONSECUTIVE_WEEKEND, W_EXCEPTIONAL, W_FAIRNESS,
@@ -19,21 +19,26 @@ from .domain import Seat, Shift
 
 
 # --- Constraint names + metadata (used by the solver service for reporting) ---
-# kind: 'hard' -> Infeasibility, 'soft' -> Compromise
+# Two orthogonal axes:
+#   kind  -- domain taxonomy: 'hard' -> Infeasibility, 'soft' -> Compromise.
+#   level -- score level the penalty lands on: 'hard' | 'medium' | 'soft'.
+# They usually coincide, but R4 (understaffing) is a *Compromise* (kind 'soft')
+# scored on the MEDIUM level so demand coverage strictly outranks every soft rule
+# (CONTEXT.md: fairness influences who fills a burden, never whether it is filled).
 CONSTRAINTS: dict[str, dict] = {
-    "R1 one assignment per moment": {"kind": "hard", "rule": "R1"},
-    "R2 at least one day off per week": {"kind": "hard", "rule": "R2"},
-    "R3 legal turnaround rest": {"kind": "hard", "rule": "R3"},
-    "R3 legal turnaround rest (carry-over)": {"kind": "hard", "rule": "R3"},
-    "R4 exact demand (understaffing)": {"kind": "soft", "rule": "R4"},
-    "R5 at most one shift per day": {"kind": "soft", "rule": "R5"},
-    "R6 night recovery": {"kind": "soft", "rule": "R6"},
-    "R6 night recovery (carry-over)": {"kind": "soft", "rule": "R6"},
-    "R7 no consecutive weekends": {"kind": "soft", "rule": "R7"},
-    "R8 preferred second day off": {"kind": "soft", "rule": "R8"},
-    "R9 fairness (burden balance)": {"kind": "soft", "rule": "R9"},
-    "R10 respect preferences": {"kind": "soft", "rule": "R10"},
-    "Exceptional Assignment (needs sign-off)": {"kind": "soft", "rule": "EXC"},
+    "R1 one assignment per moment": {"kind": "hard", "level": "hard", "rule": "R1"},
+    "R2 at least one day off per week": {"kind": "hard", "level": "hard", "rule": "R2"},
+    "R3 legal turnaround rest": {"kind": "hard", "level": "hard", "rule": "R3"},
+    "R3 legal turnaround rest (carry-over)": {"kind": "hard", "level": "hard", "rule": "R3"},
+    "R4 exact demand (understaffing)": {"kind": "soft", "level": "medium", "rule": "R4"},
+    "R5 at most one shift per day": {"kind": "soft", "level": "soft", "rule": "R5"},
+    "R6 night recovery": {"kind": "soft", "level": "soft", "rule": "R6"},
+    "R6 night recovery (carry-over)": {"kind": "soft", "level": "soft", "rule": "R6"},
+    "R7 no consecutive weekends": {"kind": "soft", "level": "soft", "rule": "R7"},
+    "R8 preferred second day off": {"kind": "soft", "level": "soft", "rule": "R8"},
+    "R9 fairness (burden balance)": {"kind": "soft", "level": "soft", "rule": "R9"},
+    "R10 respect preferences": {"kind": "soft", "level": "soft", "rule": "R10"},
+    "Exceptional Assignment (needs sign-off)": {"kind": "soft", "level": "soft", "rule": "EXC"},
 }
 
 
@@ -63,7 +68,7 @@ def one_assignment_per_moment(cf: ConstraintFactory) -> Constraint:
     # with the same employee whose shifts overlap is physically impossible.
     return (cf.for_each_unique_pair(Seat, Joiners.equal(lambda s: s.employee))
             .filter(lambda a, b: _overlap(a.shift, b.shift))
-            .penalize(HardSoftScore.ONE_HARD)
+            .penalize(HardMediumSoftScore.ONE_HARD)
             .as_constraint("R1 one assignment per moment"))
 
 
@@ -73,7 +78,7 @@ def at_least_one_day_off(cf: ConstraintFactory) -> Constraint:
             .group_by(lambda s: s.employee,
                       ConstraintCollectors.count_distinct(lambda s: s.shift.start_date))
             .filter(lambda emp, days: days >= DAYS_IN_WEEK)
-            .penalize(HardSoftScore.ONE_HARD)
+            .penalize(HardMediumSoftScore.ONE_HARD)
             .as_constraint("R2 at least one day off per week"))
 
 
@@ -82,26 +87,34 @@ def legal_turnaround_rest(cf: ConstraintFactory) -> Constraint:
     return (cf.for_each_unique_pair(Seat, Joiners.equal(lambda s: s.employee))
             .filter(lambda a, b: not _overlap(a.shift, b.shift)
                     and 0 <= _pair_gap_minutes(a, b) < LEGAL_REST_MINUTES)
-            .penalize(HardSoftScore.ONE_HARD)
+            .penalize(HardMediumSoftScore.ONE_HARD)
             .as_constraint("R3 legal turnaround rest"))
 
 
 def legal_turnaround_rest_carryover(cf: ConstraintFactory) -> Constraint:
-    # R3 (hard) across the week boundary, via Carry-over (ADR-0002).
+    # R3 (hard) across the week boundary, via Carry-over (ADR-0002). A negative gap
+    # means last week's shift overlaps this one -- a cross-boundary double-booking
+    # that R1 cannot catch (last week's shift isn't a Seat in this Schedule). It is
+    # still a hard violation, so there is no lower bound on the gap. Paired per
+    # current-week Seat, matching the within-week pairwise R3.
     return (cf.for_each(Seat)
             .filter(lambda s: s.employee.prev_shift_end is not None
-                    and 0 <= _gap_minutes(s.employee.prev_shift_end, s.shift.start_dt)
+                    and _gap_minutes(s.employee.prev_shift_end, s.shift.start_dt)
                     < LEGAL_REST_MINUTES)
-            .penalize(HardSoftScore.ONE_HARD)
+            .penalize(HardMediumSoftScore.ONE_HARD)
             .as_constraint("R3 legal turnaround rest (carry-over)"))
 
 
 def understaffing(cf: ConstraintFactory) -> Constraint:
-    # R4 (soft): exact demand. A seat left unfilled is an under-staffing Compromise.
-    # (Over-staffing cannot occur: demand is modelled as exactly one seat each.)
+    # R4 (MEDIUM): exact demand. A seat left unfilled is an under-staffing Compromise.
+    # Coverage sits on the MEDIUM score level — above every soft rule — so Fairness
+    # (R9) and the other softs can decide *who* fills a burden but never make leaving
+    # a coverable seat empty look cheaper than filling it (CONTEXT.md: fairness
+    # influences who, never whether). (Over-staffing cannot occur: demand is exactly
+    # one seat each.)
     return (cf.for_each_including_unassigned(Seat)
             .filter(lambda s: s.employee is None)
-            .penalize(HardSoftScore.of_soft(W_UNDERSTAFF))
+            .penalize(HardMediumSoftScore.of_medium(W_UNDERSTAFF))
             .as_constraint("R4 exact demand (understaffing)"))
 
 
@@ -110,7 +123,7 @@ def at_most_one_shift_per_day(cf: ConstraintFactory) -> Constraint:
     return (cf.for_each(Seat)
             .group_by(lambda s: (s.employee, s.shift.start_date), ConstraintCollectors.count())
             .filter(lambda key, c: c > 1)
-            .penalize(HardSoftScore.ONE_SOFT, lambda key, c: W_ONE_SHIFT_PER_DAY * (c - 1))
+            .penalize(HardMediumSoftScore.ONE_SOFT, lambda key, c: W_ONE_SHIFT_PER_DAY * (c - 1))
             .as_constraint("R5 at most one shift per day"))
 
 
@@ -123,18 +136,20 @@ def night_recovery(cf: ConstraintFactory) -> Constraint:
         return first.shift.is_night and _pair_gap_minutes(a, b) < NIGHT_REST_MINUTES
     return (cf.for_each_unique_pair(Seat, Joiners.equal(lambda s: s.employee))
             .filter(violation)
-            .penalize(HardSoftScore.of_soft(W_NIGHT_RECOVERY))
+            .penalize(HardMediumSoftScore.of_soft(W_NIGHT_RECOVERY))
             .as_constraint("R6 night recovery"))
 
 
 def night_recovery_carryover(cf: ConstraintFactory) -> Constraint:
-    # R6 (soft-strong) across the week boundary, via Carry-over.
+    # R6 (soft-strong) across the week boundary, via Carry-over. As with R3, a
+    # negative gap (overlap with last week's night) is still a violation, so there
+    # is no lower bound.
     return (cf.for_each(Seat)
             .filter(lambda s: s.employee.prev_shift_was_night
                     and s.employee.prev_shift_end is not None
-                    and 0 <= _gap_minutes(s.employee.prev_shift_end, s.shift.start_dt)
+                    and _gap_minutes(s.employee.prev_shift_end, s.shift.start_dt)
                     < NIGHT_REST_MINUTES)
-            .penalize(HardSoftScore.of_soft(W_NIGHT_RECOVERY))
+            .penalize(HardMediumSoftScore.of_soft(W_NIGHT_RECOVERY))
             .as_constraint("R6 night recovery (carry-over)"))
 
 
@@ -143,7 +158,7 @@ def no_consecutive_weekends(cf: ConstraintFactory) -> Constraint:
     return (cf.for_each(Seat)
             .filter(lambda s: s.shift.is_weekend and s.employee.worked_last_weekend)
             .group_by(lambda s: s.employee)
-            .penalize(HardSoftScore.of_soft(W_CONSECUTIVE_WEEKEND))
+            .penalize(HardMediumSoftScore.of_soft(W_CONSECUTIVE_WEEKEND))
             .as_constraint("R7 no consecutive weekends"))
 
 
@@ -153,7 +168,7 @@ def preferred_second_day_off(cf: ConstraintFactory) -> Constraint:
             .group_by(lambda s: s.employee,
                       ConstraintCollectors.count_distinct(lambda s: s.shift.start_date))
             .filter(lambda emp, days: days == DAYS_IN_WEEK - 1)
-            .penalize(HardSoftScore.of_soft(W_SIXTH_DAY))
+            .penalize(HardMediumSoftScore.of_soft(W_SIXTH_DAY))
             .as_constraint("R8 preferred second day off"))
 
 
@@ -164,7 +179,7 @@ def fairness_burden(cf: ConstraintFactory) -> Constraint:
     return (cf.for_each(Seat)
             .filter(lambda s: s.is_burden)
             .group_by(lambda s: s.employee, ConstraintCollectors.count())
-            .penalize(HardSoftScore.ONE_SOFT,
+            .penalize(HardMediumSoftScore.ONE_SOFT,
                       lambda emp, c: W_FAIRNESS
                       * ((c + emp.carryover_burden) ** 2 - emp.carryover_burden ** 2))
             .as_constraint("R9 fairness (burden balance)"))
@@ -174,7 +189,7 @@ def respect_preferences(cf: ConstraintFactory) -> Constraint:
     # R10 (soft-mild): avoid shifts the employee asked not to work.
     return (cf.for_each(Seat)
             .filter(lambda s: s.shift.id in s.employee.avoid_shift_ids)
-            .penalize(HardSoftScore.of_soft(W_PREFERENCE))
+            .penalize(HardMediumSoftScore.of_soft(W_PREFERENCE))
             .as_constraint("R10 respect preferences"))
 
 
@@ -184,7 +199,7 @@ def exceptional_assignment(cf: ConstraintFactory) -> Constraint:
     # surfaced as a Compromise that needs sign-off.
     return (cf.for_each(Seat)
             .filter(lambda s: not s.is_eligible(s.employee))
-            .penalize(HardSoftScore.of_soft(W_EXCEPTIONAL))
+            .penalize(HardMediumSoftScore.of_soft(W_EXCEPTIONAL))
             .as_constraint("Exceptional Assignment (needs sign-off)"))
 
 

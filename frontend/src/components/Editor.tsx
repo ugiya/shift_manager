@@ -113,17 +113,24 @@ export default function Editor({ req, onChange, errors, warnings }: Props) {
 
       {/* Projects */}
       <Section title="Projects" testid="add-project"
-        onAdd={() => req.teams[0] && set({ projects: [...req.projects, { id: nextId("proj", ids(req.projects)), name: "New project", team: req.teams[0].id }] })}>
+        onAdd={() => req.teams[0] && set({ projects: [...req.projects, { id: nextId("proj", ids(req.projects)), name: "New project", teams: [req.teams[0].id] }] })}>
         {req.projects.map((p) => (
           <Row key={p.id} entity="project" id={p.id}
             canDelete={!projectReferenced(req, p.id)}
             onDelete={() => set({ projects: rm(req.projects, p.id) })}>
             <input className="in in--name" data-testid="name-input" value={p.name}
               onChange={(e) => set({ projects: upd(req.projects, p.id, { name: e.target.value }) })} />
-            <select className="in" data-testid="project-team" value={p.team}
-              onChange={(e) => set({ projects: upd(req.projects, p.id, { team: e.target.value }) })}>
-              {req.teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-            </select>
+            <div className="multi" data-testid="project-teams">
+              {req.teams.map((t) => (
+                <label key={t.id} className="chk">
+                  <input type="checkbox" data-testid="project-team-option" data-team-id={t.id}
+                    checked={p.teams.includes(t.id)}
+                    onChange={(ev) => set({ projects: upd(req.projects, p.id, {
+                      teams: ev.target.checked ? [...p.teams, t.id] : p.teams.filter((x) => x !== t.id),
+                    }) })} /> {t.name}
+                </label>
+              ))}
+            </div>
           </Row>
         ))}
       </Section>
@@ -132,7 +139,9 @@ export default function Editor({ req, onChange, errors, warnings }: Props) {
       <Section title="Employees" testid="add-employee"
         onAdd={() => req.teams[0] && set({ employees: [...req.employees, {
           id: nextId("emp", ids(req.employees)), name: "New person", team: req.teams[0].id,
-          roles: [], projects: [], can_manage: false, carryover_burden: 0, worked_last_weekend: false,
+          roles: [], projects: [], can_manage: false,
+          status: "active", employee_number: null, email: null, phone: null, hire_date: null, notes: null,
+          carryover_burden: 0, worked_last_weekend: false,
           prev_shift_end: null, prev_shift_was_night: false, avoid_shift_ids: [] }] })}>
         {req.employees.map((e) => {
           const teamProjects = projectsForTeam(req, e.team);
@@ -150,6 +159,11 @@ export default function Editor({ req, onChange, errors, warnings }: Props) {
               <select className="in" data-testid="employee-team" value={e.team}
                 onChange={(ev) => set({ employees: upd(req.employees, e.id, { team: ev.target.value, projects: [] }) })}>
                 {req.teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+              <select className="in" data-testid="employee-status" value={e.status}
+                title="Only active employees are scheduled"
+                onChange={(ev) => set({ employees: upd(req.employees, e.id, { status: ev.target.value }) })}>
+                {["active", "on-leave", "inactive"].map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
               <Chips label="roles" all={req.roles} selected={e.roles} onToggle={(id) => toggle("roles", id)} />
               <Chips label="projects" all={teamProjects} selected={e.projects} onToggle={(id) => toggle("projects", id)} />

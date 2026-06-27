@@ -140,25 +140,34 @@ def derive_flags(schedule: Schedule, lookup: dict | None = None) -> list[dict]:
                     f"(recommended {_hours(NIGHT_REST_MINUTES)}).",
                     employee=emp_id, seats=(first, second)))
 
-    # R3 / R6 carry-over across the week boundary
+    # R3 / R6 carry-over across the week boundary. Mirrors constraints.py exactly:
+    # last week's shift is paired with EACH current-week seat (per-seat, like the
+    # within-week pairwise R3), and a negative gap is a hard cross-boundary overlap
+    # that R1 cannot see — so there is no lower bound on the gap.
     for emp_id, seats in by_emp.items():
         emp = seats[0].employee
         if emp.prev_shift_end is None:
             continue
-        earliest = min(seats, key=lambda s: s.shift.start_dt)
-        gap = _gap_minutes(emp.prev_shift_end, earliest.shift.start_dt)
-        if 0 <= gap < LEGAL_REST_MINUTES:
-            flags.append(_flag(
-                "R3", "hard", 0,
-                f"{emp_name(emp)} too little rest from last week",
-                f"Only {_hours(gap)} between last week's shift and {shift_label(earliest.shift)}.",
-                employee=emp_id, seats=(earliest,)))
-        if emp.prev_shift_was_night and 0 <= gap < NIGHT_REST_MINUTES:
-            flags.append(_flag(
-                "R6", "soft", W_NIGHT_RECOVERY,
-                f"{emp_name(emp)} short night recovery from last week",
-                f"Only {_hours(gap)} after last week's night shift before {shift_label(earliest.shift)}.",
-                employee=emp_id, seats=(earliest,)))
+        for s in seats:
+            gap = _gap_minutes(emp.prev_shift_end, s.shift.start_dt)
+            if gap < LEGAL_REST_MINUTES:
+                detail = (f"Overlaps last week's shift — no rest before "
+                          f"{shift_label(s.shift)}." if gap < 0 else
+                          f"Only {_hours(gap)} between last week's shift and "
+                          f"{shift_label(s.shift)} (legal minimum {_hours(LEGAL_REST_MINUTES)}).")
+                flags.append(_flag(
+                    "R3", "hard", 0,
+                    f"{emp_name(emp)} too little rest from last week",
+                    detail, employee=emp_id, seats=(s,)))
+            if emp.prev_shift_was_night and gap < NIGHT_REST_MINUTES:
+                detail = (f"Overlaps last week's night shift — no recovery before "
+                          f"{shift_label(s.shift)}." if gap < 0 else
+                          f"Only {_hours(gap)} after last week's night shift before "
+                          f"{shift_label(s.shift)} (recommended {_hours(NIGHT_REST_MINUTES)}).")
+                flags.append(_flag(
+                    "R6", "soft", W_NIGHT_RECOVERY,
+                    f"{emp_name(emp)} short night recovery from last week",
+                    detail, employee=emp_id, seats=(s,)))
 
     # R7 no consecutive weekends (soft-strong)
     for emp_id, seats in by_emp.items():

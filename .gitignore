@@ -16,3 +16,4 @@ frontend/tsconfig.tsbuildinfo
 .DS_Store
 .claude/
 .omx/
+test-results/

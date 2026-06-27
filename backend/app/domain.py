@@ -19,7 +19,7 @@ from timefold.solver.domain import (PlanningEntityCollectionProperty, PlanningId
                                      PlanningScore, PlanningVariable,
                                      ProblemFactCollectionProperty, ValueRangeProvider,
                                      planning_entity, planning_solution)
-from timefold.solver.score import HardSoftScore
+from timefold.solver.score import HardMediumSoftScore
 
 from .config import WEEKEND_WEEKDAYS
 
@@ -49,7 +49,7 @@ class Team:
 class Project:
     id: str
     name: str
-    team_id: str
+    team_ids: frozenset[str]   # ADR-0003: a project may run under multiple teams/sites
 
 
 @dataclass(frozen=True)
@@ -143,4 +143,4 @@ class Schedule:
     employees: Annotated[list[Employee], ProblemFactCollectionProperty]
     shifts: Annotated[list[Shift], ProblemFactCollectionProperty]
     seats: Annotated[list[Seat], PlanningEntityCollectionProperty]
-    score: Annotated[Optional[HardSoftScore], PlanningScore] = field(default=None)
+    score: Annotated[Optional[HardMediumSoftScore], PlanningScore] = field(default=None)

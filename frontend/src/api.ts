@@ -1,6 +1,7 @@
 import type {
   Assignments,
   BuildResult,
+  CarryoverSeed,
   RequirementsDoc,
   SolveResponse,
   ValidateResponse,
@@ -23,17 +24,31 @@ export function getRequirements(): Promise<RequirementsDoc> {
   return fetch("/api/requirements").then((r) => json<RequirementsDoc>(r));
 }
 
-export function build(requirements: RequirementsDoc): Promise<BuildResult> {
-  return post<BuildResult>("/api/build", { requirements });
+// `carryoverSeed` (optional): a prior week's next_carryover envelope, replayed to
+// seed this week's carry-over. The server checks it targets this week (ADR-0002).
+export function build(
+  requirements: RequirementsDoc,
+  carryoverSeed?: CarryoverSeed,
+): Promise<BuildResult> {
+  return post<BuildResult>("/api/build", { requirements, carryover_seed: carryoverSeed });
 }
 
-export function solve(requirements: RequirementsDoc, seconds?: number): Promise<SolveResponse> {
-  return post<SolveResponse>("/api/solve", { requirements, seconds });
+export function solve(
+  requirements: RequirementsDoc,
+  seconds?: number,
+  carryoverSeed?: CarryoverSeed,
+): Promise<SolveResponse> {
+  return post<SolveResponse>("/api/solve", { requirements, seconds, carryover_seed: carryoverSeed });
 }
 
 export function validate(
   requirements: RequirementsDoc,
   assignments: Assignments,
+  carryoverSeed?: CarryoverSeed,
 ): Promise<ValidateResponse> {
-  return post<ValidateResponse>("/api/validate", { requirements, assignments });
+  return post<ValidateResponse>("/api/validate", {
+    requirements,
+    assignments,
+    carryover_seed: carryoverSeed,
+  });
 }

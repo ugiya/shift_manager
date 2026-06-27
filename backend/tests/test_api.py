@@ -14,7 +14,7 @@ TINY = {
     "roles": [{"id": "dev", "name": "Dev"}],
     "shift_types": [{"id": "m", "name": "Morning", "start": 8, "end": 16, "is_night": False}],
     "teams": [{"id": "a", "name": "Alpha", "site": "hq"}],
-    "projects": [{"id": "p", "name": "Apollo", "team": "a"}],
+    "projects": [{"id": "p", "name": "Apollo", "teams": ["a"]}],
     "employees": [
         {"id": "dana", "name": "Dana", "team": "a", "roles": ["dev"], "projects": ["p"], "can_manage": True},
         {"id": "adam", "name": "Adam", "team": "a", "roles": ["dev"], "projects": ["p"], "can_manage": True},

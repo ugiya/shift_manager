@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { build as apiBuild, getRequirements, solve as apiSolve, validate as apiValidate } from "./api";
-import type { Assignments, Dataset, Flag, RequirementsDoc, ScoreInfo } from "./types";
+import type {
+  Assignments, CarryoverSeed, Dataset, Flag, RequirementsDoc, ScoreInfo,
+} from "./types";
 import { countFilled, siteIssues } from "./lib/lookups";
 import ScheduleGrid from "./components/ScheduleGrid";
 import FlagsPanel from "./components/FlagsPanel";
@@ -27,6 +29,10 @@ export default function App() {
   const [validating, setValidating] = useState(false);
   const [siteId, setSiteId] = useState<string>("");
   const [fatal, setFatal] = useState<string | null>(null);
+  // Carry-over (ADR-0002): `carryover` is the seed currently applied to this week;
+  // `nextCarryover` is the seed the latest solve/validate produced for the NEXT week.
+  const [carryover, setCarryover] = useState<CarryoverSeed | null>(null);
+  const [nextCarryover, setNextCarryover] = useState<CarryoverSeed | null>(null);
   const reqToken = useRef(0);
   const buildToken = useRef(0);
 
@@ -39,10 +45,13 @@ export default function App() {
   // Editing the org invalidates any existing solution, so the schedule resets.
   useEffect(() => {
     if (!req) return;
+    // Invalidate the stale next-week seed IMMEDIATELY (not after the debounce), so
+    // the "Carry to next week" button can't be clicked during the rebuild window.
+    setNextCarryover(null);
     const token = ++buildToken.current;
     const h = setTimeout(async () => {
       try {
-        const r = await apiBuild(req);
+        const r = await apiBuild(req, carryover ?? undefined);
         if (token !== buildToken.current) return;
         setErrors(r.errors);
         setWarnings(r.warnings);
@@ -59,13 +68,22 @@ export default function App() {
     }, 350);
     return () => clearTimeout(h);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [req]);
+  }, [req, carryover]);
 
+  // `reqToken` is the op-generation guard: every solve/validate captures it and
+  // refuses to write its (possibly stale) response — score, flags, next-week seed —
+  // if a newer override or requirements change has since bumped it. This is what
+  // stops an in-flight response from repopulating a stale nextCarryover after the
+  // org changed. Spinners reset unconditionally so a superseded op never leaves one stuck.
   const handleSolve = useCallback(async () => {
     if (!req) return;
+    ++buildToken.current;              // cancel any pending debounced build
+    const token = ++reqToken.current;  // this op is the latest; older responses bail
+    setValidating(false);              // supersede any in-flight validate (shared token)
     setSolving(true);
     try {
-      const r = await apiSolve(req);
+      const r = await apiSolve(req, undefined, carryover ?? undefined);
+      if (token !== reqToken.current) return;   // a newer edit/override superseded us
       setErrors(r.errors);
       setWarnings(r.warnings);
       if (r.errors.length > 0 || !r.dataset) {
@@ -76,14 +94,17 @@ export default function App() {
       setAssignments(r.assignments);
       setScore(r.score);
       setFlags(r.flags);
+      setNextCarryover(r.next_carryover);
       setView("schedule");
       if (!r.dataset.sites.some((s) => s.id === siteId)) setSiteId(r.dataset.sites[0]?.id ?? "");
     } catch (e) {
       setFatal(String(e));
     } finally {
-      setSolving(false);
+      // Only the latest op clears its spinner (avoids an early hide while a newer
+      // op is still in flight); a superseding edit clears it synchronously instead.
+      if (token === reqToken.current) setSolving(false);
     }
-  }, [req, siteId]);
+  }, [req, siteId, carryover]);
 
   const handleChange = useCallback(
     async (seatId: string, employeeId: string | null) => {
@@ -91,12 +112,14 @@ export default function App() {
       const next = { ...assignments, [seatId]: employeeId };
       setAssignments(next);
       const token = ++reqToken.current;
+      setSolving(false);     // supersede any in-flight solve (shared token)
       setValidating(true);
       try {
-        const r = await apiValidate(req, next);
+        const r = await apiValidate(req, next, carryover ?? undefined);
         if (token === reqToken.current && r.score) {
           setScore(r.score);
           setFlags(r.flags);
+          setNextCarryover(r.next_carryover);   // seed reflects the latest overrides
         }
       } catch (e) {
         setFatal(String(e));
@@ -104,8 +127,41 @@ export default function App() {
         if (token === reqToken.current) setValidating(false);
       }
     },
-    [req, assignments],
+    [req, assignments, carryover],
   );
+
+  // Edits to the org invalidate any seed derived from the now-stale schedule, AND
+  // any in-flight solve/validate (via the reqToken bump). Clearing nextCarryover in
+  // the SAME update as setReq guarantees no committed render shows a stale,
+  // clickable Carry button (the build-effect clear is only a backstop).
+  const handleRequirementsChange = useCallback((next: RequirementsDoc) => {
+    ++reqToken.current;       // bail any in-flight solve/validate write
+    ++buildToken.current;     // bail any in-flight build before its microtask resolves
+    setNextCarryover(null);
+    setSolving(false);        // a superseded op won't clear its own spinner (token-gated)
+    setValidating(false);
+    setReq(next);
+  }, []);
+
+  // Advance to the next week, seeded by the accepted schedule's carry-over
+  // (ADR-0002). Bumps week_start to the seed's target week and applies the seed;
+  // the build effect then re-materialises the (empty) next week.
+  const handleCarryForward = useCallback(() => {
+    if (!req || !nextCarryover?.target_week_start) return;
+    ++reqToken.current;    // invalidate any in-flight solve/validate for the old week
+    ++buildToken.current;  // and any in-flight build
+    // Reset the displayed schedule synchronously so the new (unsolved) week never
+    // shows the prior week's solved grid during the debounced rebuild.
+    setScore(null);
+    setFlags([]);
+    setSolving(false);
+    setValidating(false);
+    setAssignments(emptyAssignments(dataset));
+    setReq({ ...req, week_start: nextCarryover.target_week_start });
+    setCarryover(nextCarryover);
+    setNextCarryover(null);
+    setView("schedule");
+  }, [req, nextCarryover, dataset]);
 
   const issues = useMemo(() => (dataset ? siteIssues(dataset, assignments) : {}), [dataset, assignments]);
 
@@ -124,6 +180,7 @@ export default function App() {
           <h1>Shift Scheduler</h1>
           <span className="topbar__site">
             {req.sites.length} sites · {req.employees.length} people{weekRange ? ` · ${weekRange}` : ""}
+            {carryover && <span className="topbar__seeded" data-testid="seeded-tag"> · seeded from prior week</span>}
           </span>
         </div>
         <div className="topbar__actions">
@@ -140,12 +197,19 @@ export default function App() {
             disabled={solving || blocked} title={blocked ? "Fix requirement errors first" : ""}>
             {solving ? "Solving…" : score ? "Re-solve" : "Generate schedule"}
           </button>
+          {nextCarryover?.target_week_start && (
+            <button className="btn" data-testid="carry-button" onClick={handleCarryForward}
+              disabled={solving || validating || blocked}
+              title={`Seed the week of ${fmt(nextCarryover.target_week_start)} from this schedule`}>
+              Carry to {fmt(nextCarryover.target_week_start)} →
+            </button>
+          )}
         </div>
       </header>
 
       {view === "editor" ? (
         <main className="editorwrap">
-          <Editor req={req} onChange={setReq} errors={errors} warnings={warnings} />
+          <Editor req={req} onChange={handleRequirementsChange} errors={errors} warnings={warnings} />
         </main>
       ) : (
         <>
@@ -195,10 +259,13 @@ function ScoreBadge({ score, filled, total }: { score: ScoreInfo | null; filled:
   return (
     <span className={`badge ${score.feasible ? "badge--ok" : "badge--bad"}`}
       data-testid="score-badge" data-feasible={score.feasible} data-filled={filled} data-total={total}
-      data-soft={score.soft_score}>
+      data-medium={score.medium_score} data-soft={score.soft_score}>
       <span className="badge__dot" aria-hidden />
       {score.feasible ? "Feasible" : "Infeasible"}
       <span className="badge__sep">·</span>{filled}/{total} filled
+      {score.medium_score < 0 && (
+        <><span className="badge__sep">·</span>coverage −{Math.abs(score.medium_score)}</>
+      )}
       <span className="badge__sep">·</span>penalty {Math.abs(score.soft_score)}
     </span>
   );

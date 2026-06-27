@@ -7,6 +7,11 @@ The interactive editor builds one of these documents and posts it to /api/build,
 Rule constants (legal/night rest, weekend days) stay global defaults — the editor
 configures the org, people, skills, projects, shift types (incl. hours + night
 flag) and demand.
+
+Datetime contract: all schedule times are local-naive (data.py builds them with
+`datetime.combine`, no tzinfo). `prev_shift_end` is the only datetime the client
+sends, so it must be local-naive too — validation rejects timezone-aware values
+rather than letting a naive/aware mismatch crash the solve/score path.
 """
 from __future__ import annotations
 
@@ -14,8 +19,8 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, Field
 
-from .config import (LEGAL_REST_MINUTES, MAX_EMPLOYEES, MAX_SEATS,
-                     NIGHT_REST_MINUTES, WEEKEND_WEEKDAYS)
+from .config import (LEGAL_REST_MINUTES, MAX_CARRYOVER_BURDEN, MAX_EMPLOYEES,
+                     MAX_SEATS, NIGHT_REST_MINUTES, WEEKEND_WEEKDAYS)
 from .data import Dataset
 from .domain import Employee, Project, Role, ShiftType, Site, Team
 
@@ -54,7 +59,10 @@ class TeamIn(BaseModel):
 class ProjectIn(BaseModel):
     id: str
     name: str
-    team: str
+    teams: list[str] = Field(default_factory=list)   # ADR-0003: one-or-more teams/sites
+
+
+EMPLOYEE_STATUSES = ("active", "on-leave", "inactive")
 
 
 class EmployeeIn(BaseModel):
@@ -64,10 +72,19 @@ class EmployeeIn(BaseModel):
     roles: list[str] = Field(default_factory=list)
     projects: list[str] = Field(default_factory=list)
     can_manage: bool = False
+    # --- HR metadata (round-trip only; only `status` affects scheduling) ---
+    # Only `status == "active"` employees are scheduled; others are kept in the roster
+    # (and export) but excluded from coverage/eligibility/the materialised dataset.
+    status: str = "active"
+    employee_number: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    hire_date: str | None = None
+    notes: str | None = None
     # --- Carry-over (ADR-0002): prior-week state that feeds this week's solve ---
     carryover_burden: int = 0
     worked_last_weekend: bool = False
-    prev_shift_end: str | None = None        # ISO datetime; R3/R6 across the week boundary
+    prev_shift_end: str | None = None        # local-naive ISO datetime; R3/R6 across the week boundary
     prev_shift_was_night: bool = False       # whether that last shift was a Night Shift
     avoid_shift_ids: list[str] = Field(default_factory=list)  # negative Preferences (R10)
 
@@ -77,6 +94,30 @@ class DemandIn(BaseModel):
     shift_type: str
     days: list[str] = Field(default_factory=list)
     crew: dict[str, dict[str, int]] = Field(default_factory=dict)  # project -> role -> count
+
+
+class CarryoverFields(BaseModel):
+    """The four carry-over fields, in one place (ADR-0002). This is the single
+    source for the carry-over shape shared by EmployeeIn (input), the seed envelope
+    (CarryoverSeedIn / next_week_carryover output) and the frontend types — a
+    contract test pins EmployeeIn against it so the four cannot drift apart."""
+    carryover_burden: int = 0
+    worked_last_weekend: bool = False
+    prev_shift_end: str | None = None        # local-naive ISO datetime; R3/R6 across boundary
+    prev_shift_was_night: bool = False
+
+
+CARRYOVER_FIELDS = tuple(CarryoverFields.model_fields)
+
+
+class CarryoverSeedIn(BaseModel):
+    """A prior week's carry-over seed, replayed as this week's input (ADR-0002).
+    Self-describing so a client cannot silently splice a wrong-week seed: the server
+    checks `target_week_start` matches the requested week before applying it."""
+    source_week_start: str | None = None
+    target_week_start: str | None = None
+    source_feasible: bool = True             # was the source schedule hard-feasible?
+    employees: dict[str, CarryoverFields] = Field(default_factory=dict)
 
 
 class RequirementsIn(BaseModel):
@@ -99,12 +140,27 @@ def _dupes(ids: list[str]) -> list[str]:
     return sorted(dup)
 
 
-def _bad_datetime(s: str) -> bool:
+def _parse_datetime(s: str) -> datetime | None:
+    """Parse an ISO datetime, or None if it isn't one."""
     try:
-        datetime.fromisoformat(s)
-        return False
+        return datetime.fromisoformat(s)
     except (ValueError, TypeError):
-        return True
+        return None
+
+
+def _naive_datetime(s: str | None) -> datetime | None:
+    """Parse a carry-over datetime for the domain, enforcing the local-naive
+    contract (see module docstring). Raises on a timezone-aware value so a
+    direct `to_dataset` caller fails loudly here instead of crashing deep in the
+    solve/score path. HTTP callers get a friendly error from
+    `validate_requirements` first; this is the defence for any other ingress."""
+    if s is None:
+        return None
+    dt = datetime.fromisoformat(s)
+    if dt.utcoffset() is not None:
+        raise ValueError(f"prev_shift_end must be a local (timezone-naive) ISO "
+                         f"datetime, got {s!r}")
+    return dt
 
 
 def _bad_date(s: str) -> bool:
@@ -168,13 +224,19 @@ def validate_requirements(req: RequirementsIn) -> tuple[list[str], list[str]]:
         if t.site not in site_ids:
             errors.append(f"Team {t.id!r} references unknown site {t.site!r}.")
 
-    # projects -> teams
+    # projects -> teams (ADR-0003: a project runs under one or more teams)
     for p in req.projects:
-        if p.team not in team_ids:
-            errors.append(f"Project {p.id!r} references unknown team {p.team!r}.")
+        if not p.teams:
+            errors.append(f"Project {p.id!r} must belong to at least one team.")
+        for tid in p.teams:
+            if tid not in team_ids:
+                errors.append(f"Project {p.id!r} references unknown team {tid!r}.")
 
     # employees
     for e in req.employees:
+        if e.status not in EMPLOYEE_STATUSES:
+            errors.append(f"Employee {e.id!r} has invalid status {e.status!r} "
+                          f"(expected one of {', '.join(EMPLOYEE_STATUSES)}).")
         if e.team not in team_ids:
             errors.append(f"Employee {e.id!r} references unknown team {e.team!r}.")
         for r in e.roles:
@@ -184,13 +246,25 @@ def validate_requirements(req: RequirementsIn) -> tuple[list[str], list[str]]:
             proj = project_by_id.get(pid)
             if proj is None:
                 errors.append(f"Employee {e.id!r} on unknown project {pid!r}.")
-            elif proj.team != e.team:
-                errors.append(f"Employee {e.id!r} is on project {pid!r} which is not in their team.")
+            elif e.team not in proj.teams:
+                errors.append(f"Employee {e.id!r} is on project {pid!r} which does not run in their team.")
         if e.carryover_burden < 0:
             errors.append(f"Employee {e.id!r}: carry-over burden cannot be negative.")
-        if e.prev_shift_end is not None and _bad_datetime(e.prev_shift_end):
-            errors.append(f"Employee {e.id!r}: prev_shift_end {e.prev_shift_end!r} "
-                          f"is not a valid ISO datetime.")
+        elif e.carryover_burden > MAX_CARRYOVER_BURDEN:
+            errors.append(f"Employee {e.id!r}: carry-over burden {e.carryover_burden} "
+                          f"exceeds the limit of {MAX_CARRYOVER_BURDEN}.")
+        if e.prev_shift_end is not None:
+            dt = _parse_datetime(e.prev_shift_end)
+            if dt is None:
+                errors.append(f"Employee {e.id!r}: prev_shift_end {e.prev_shift_end!r} "
+                              f"is not a valid ISO datetime.")
+            elif dt.utcoffset() is not None:
+                # Schedule times are local-naive (data.py builds them with
+                # datetime.combine, no tz). A timezone-aware carry-over time would
+                # later be subtracted from naive shift times and crash the
+                # solve/score path, so reject it at the edge.
+                errors.append(f"Employee {e.id!r}: prev_shift_end {e.prev_shift_end!r} "
+                              f"must be a local (timezone-naive) ISO datetime.")
         if not e.roles and not e.can_manage:
             warnings.append(f"Employee {e.id!r} has no role and cannot manage — unusable.")
 
@@ -210,8 +284,8 @@ def validate_requirements(req: RequirementsIn) -> tuple[list[str], list[str]]:
             proj = project_by_id.get(pid)
             if proj is None:
                 errors.append(f"{where} crew references unknown project {pid!r}.")
-            elif proj.team != d.team:
-                errors.append(f"{where} crew project {pid!r} is not in team {d.team!r}.")
+            elif d.team not in proj.teams:
+                errors.append(f"{where} crew project {pid!r} does not run in team {d.team!r}.")
             for rid, count in roles.items():
                 if rid not in role_ids:
                     errors.append(f"{where} crew references unknown role {rid!r}.")
@@ -238,19 +312,65 @@ def validate_requirements(req: RequirementsIn) -> tuple[list[str], list[str]]:
     return errors, warnings
 
 
+def apply_carryover_seed(req: RequirementsIn,
+                         seed: CarryoverSeedIn) -> tuple[list[str], list[str]]:
+    """Replay a prior week's carry-over seed onto this week's employees (ADR-0002).
+
+    Mutates `req.employees` in place, then normal `validate_requirements` covers the
+    merged values (naive-datetime + burden-cap checks). Returns (errors, warnings):
+    a blocking error if the seed targets a different week than requested; warnings
+    for an infeasible source or unknown employees. Must run BEFORE validation.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    effective_week = req.week_start or Dataset.week_start.isoformat()
+    # A seed that actually carries data MUST declare a target week that matches the
+    # requested one — otherwise a seed with a missing/empty target_week_start could
+    # silently splice carry-over into the wrong week. (An empty seed is a no-op and
+    # needs no check.)
+    if seed.employees:
+        if not seed.target_week_start:
+            errors.append("Carry-over seed must declare target_week_start "
+                          f"(expected {effective_week!r}).")
+            return errors, warnings
+        if seed.target_week_start != effective_week:
+            errors.append(f"Carry-over seed targets week {seed.target_week_start!r}, but the "
+                          f"requested week is {effective_week!r}.")
+            return errors, warnings
+    if not seed.source_feasible:
+        warnings.append("Carry-over seed came from an infeasible schedule; its rest / "
+                        "fairness carry-over may be unreliable.")
+    by_id = {e.id: e for e in req.employees}
+    for emp_id, co in seed.employees.items():
+        e = by_id.get(emp_id)
+        if e is None:
+            warnings.append(f"Carry-over seed references unknown employee {emp_id!r}; ignored.")
+            continue
+        e.carryover_burden = co.carryover_burden
+        e.worked_last_weekend = co.worked_last_weekend
+        e.prev_shift_end = co.prev_shift_end
+        e.prev_shift_was_night = co.prev_shift_was_night
+    return errors, warnings
+
+
 def _coverage_warnings(req: RequirementsIn, warnings: list[str]) -> None:
+    # Only active employees are scheduled, so coverage must reason about them only —
+    # otherwise an inactive manager would suppress the no-manager warning, etc.
+    active = [e for e in req.employees if e.status == "active"]
     teams_with_demand = {d.team for d in req.demand}
     for team in req.teams:
         if team.id not in teams_with_demand:
             continue
-        if not any(e.team == team.id and e.can_manage for e in req.employees):
+        if not any(e.team == team.id and e.can_manage for e in active):
             warnings.append(f"Team {team.id!r} has demand but no shift-manager-eligible "
                             f"employee — manager seats will be unfilled.")
     for d in req.demand:
         for pid, roles in d.crew.items():
             for rid in roles:
-                eligible = [e for e in req.employees
-                            if pid in e.projects and rid in e.roles]
+                # Same-team predicate mirrors worker eligibility (ADR-0003): only an
+                # active employee in the demand's team can fill its seats automatically.
+                eligible = [e for e in active
+                            if pid in e.projects and rid in e.roles and e.team == d.team]
                 if not eligible:
                     warnings.append(f"No employee can fill {rid} on {pid} — those seats "
                                     f"will be unfilled.")
@@ -263,16 +383,18 @@ def to_dataset(req: RequirementsIn) -> Dataset:
     roles = [Role(r.id, r.name) for r in req.roles]
     shift_types = [ShiftType(s.id, s.name, s.is_night, s.start, s.end) for s in req.shift_types]
     teams = [Team(t.id, t.name, t.site) for t in req.teams]
-    projects = [Project(p.id, p.name, p.team) for p in req.projects]
+    projects = [Project(p.id, p.name, frozenset(p.teams)) for p in req.projects]
+    # Only active employees are materialised into the solve (HR status, Phase 2);
+    # inactive / on-leave people stay in the roster + export but are never scheduled.
     employees = [
         Employee(e.id, e.name, e.team, frozenset(e.roles), frozenset(e.projects),
                  can_manage=e.can_manage,
                  avoid_shift_ids=frozenset(e.avoid_shift_ids),
                  carryover_burden=e.carryover_burden,
                  worked_last_weekend=e.worked_last_weekend,
-                 prev_shift_end=datetime.fromisoformat(e.prev_shift_end) if e.prev_shift_end else None,
+                 prev_shift_end=_naive_datetime(e.prev_shift_end),
                  prev_shift_was_night=e.prev_shift_was_night)
-        for e in req.employees
+        for e in req.employees if e.status == "active"
     ]
     demand = [
         (d.team, d.shift_type, [DAY_TO_WEEKDAY[day] for day in d.days], d.crew)
@@ -290,11 +412,13 @@ def dataset_to_requirements(ds: Dataset) -> dict:
         "shift_types": [{"id": s.id, "name": s.name, "start": s.start_hour,
                          "end": s.end_hour, "is_night": s.is_night} for s in ds.shift_types],
         "teams": [{"id": t.id, "name": t.name, "site": t.site_id} for t in ds.teams],
-        "projects": [{"id": p.id, "name": p.name, "team": p.team_id} for p in ds.projects],
+        "projects": [{"id": p.id, "name": p.name, "teams": sorted(p.team_ids)} for p in ds.projects],
         "employees": [{
             "id": e.id, "name": e.name, "team": e.team_id,
             "roles": sorted(e.role_ids), "projects": sorted(e.project_ids),
             "can_manage": e.can_manage,
+            "status": "active", "employee_number": None, "email": None,
+            "phone": None, "hire_date": None, "notes": None,
             "avoid_shift_ids": sorted(e.avoid_shift_ids),
             "carryover_burden": e.carryover_burden,
             "worked_last_weekend": e.worked_last_weekend,
