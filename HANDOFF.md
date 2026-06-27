@@ -2,8 +2,9 @@
 
 **Repo:** `/Users/uri/projects/adili/shift_manager`.
 **Baseline commit:** `edad485` on branch **`feat/employee-features-and-views`** (branched
-off `main` @ `c446a65`). Everything through Phase 2 *code* is committed there as a WIP
-checkpoint; the tree is clean. New work goes on top; `git diff edad485` shows it.
+off `main` @ `c446a65`), pushed to **origin = github.com/ugiya/shift_manager** (private).
+Everything through Phase 2 *code* is committed there as a WIP checkpoint; the tree is
+clean. New work goes on top; `git diff edad485` shows it.
 The data model is authoritative in `docs/DATA_MODEL.md` (+ `CONTEXT.md`, `docs/adr/`) —
 those win over any memory; re-read before acting.
 
