@@ -52,3 +52,19 @@ export function validate(
     carryover_seed: carryoverSeed,
   });
 }
+
+// Phase 5: import / export. JSON is lossless; CSV is a lossy employee roster.
+export type ImportMode = "replace" | "upsert_by_id" | "upsert_by_name" | "replace_autocreate_refs";
+
+export interface ExportResponse { errors: string[]; content: string; filename: string; lossy: boolean }
+export interface ImportResponse { errors: string[]; warnings: string[]; requirements: RequirementsDoc | null }
+
+export function exportDoc(requirements: RequirementsDoc, format: "json" | "csv"): Promise<ExportResponse> {
+  return post<ExportResponse>("/api/export", { requirements, format });
+}
+
+export function importDoc(
+  requirements: RequirementsDoc, format: "json" | "csv", mode: ImportMode, content: string,
+): Promise<ImportResponse> {
+  return post<ImportResponse>("/api/import", { requirements, format, mode, content });
+}

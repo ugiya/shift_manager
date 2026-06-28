@@ -9,6 +9,94 @@ hardcoded tip SHA — it moves as you commit.)
 The data model is authoritative in `docs/DATA_MODEL.md` (+ `CONTEXT.md`, `docs/adr/`) —
 those win over any memory; re-read before acting.
 
+## ⏭️ CURRENT WORK — Round 2: UI tweaks (DONE — verified + codex'd; uncommitted)
+
+> **STATUS:** All five tweaks DONE + verified + consult-codex'd. Verification: frontend build
+> + e2e typecheck clean; **full e2e 87 passed**; backend **937 passed** (no backend changes
+> this round). Still uncommitted on `feat/employee-features-and-views` (commit when the user
+> asks). Remaining optional: a `/task-summary`.
+> - **#1 (draft/Save editor + recoverable errors): DONE + codex'd.** Editor edits a local
+>   draft (lifted to `App.draft`); Save/Discard + unsaved indicator; Solve/Carry gated while
+>   dirty + a `building` gate so no stale-feasible/enabled-Solve window. `ErrorBoundary`
+>   (outer in `main.tsx` + inner around editor / schedule content, keyed so a crashed view is
+>   escapable) + a recoverable initial-load fatal screen + dismissible fatal banner. Codex:
+>   CHANGES-NEEDED → 3 findings fixed → re-reviewed, confirmed.
+> - **#3 (view order/default): DONE.** `Project · Team · Employee · Site`, default Project;
+>   all Site-grid e2e specs now click `viewby-site` first; `views.spec` rewritten.
+> - **#4 (Team/Employee person-row editing): DONE.** Inline seat-picker per cell (Eligible /
+>   Exceptional / "Replace someone") + chip × to remove; immediate re-validate. User-approved.
+> - **#2 (Project view editing): DONE.** Inline count steppers + per-day run toggles
+>   (draft→Save), seat assignment via the shared `SeatCell` (immediate), add-requirement
+>   control, and the "No requirements this week" empty state (#4-the-tweak's zero case).
+>   User-approved "inline +/-", reconciled with the demand model: counts are per
+>   `(team,shift_type,role)`, days are per `(team,shift_type)` shown at the shift-group level.
+> - **Assignment lock (codex-driven):** while requirement edits are unsaved OR a rebuild is in
+>   flight (`locked = dirty || building`), assignment editing is paused in **all four** views
+>   (Site `SeatCell` selects disabled + banner; Project seats read-only; rosters hide
+>   assign/remove + banner) — the Save rebuild resets assignments, so an edit then would be
+>   lost. This was the key chunk-2 finding.
+> - **Codex chunk 2 (#2/#4):** CHANGES-NEEDED (×2 rounds: assignment-while-dirty clobber, then
+>   the Site-grid lock gap) → all fixed → final verdict **APPROVE-WITH-NITS** (the one nit —
+>   banner copy — addressed). Edge-case e2e added: decrement-to-zero, all-days-off→error,
+>   replace-someone, dirty-locks-every-view, eligible-first ordering.
+> - **Docs:** `docs/DATA_MODEL.md` §7 updated for the approved "all four views editable"
+>   reversal of the Phase-6 "overrides only in Site view" rule + the draft/lock behavior.
+>   CONTEXT.md Override is already view-agnostic (no change needed).
+>
+> New components: `frontend/src/components/ErrorBoundary.tsx`; rewritten `RosterView.tsx` +
+> `ProjectView.tsx` (editable); `SeatCell.tsx`/`ScheduleGrid.tsx` gained a `locked` prop; new
+> helpers `setCrewCount`/`setDemandDays`/`defaultDaysForTeam` in `lib/req.ts`; new e2e
+> `editable_views.spec.ts`. Also touched: `App.tsx`, `components/Editor.tsx`, `styles.css`,
+> `main.tsx`, most `e2e/*.spec.ts`.
+
+The 6-phase build below is **DONE + verified** (backend 937 / e2e 74, all uncommitted on
+`feat/employee-features-and-views`). The user then ran the app and requested 5 tweaks; I asked
+clarifying questions and **these answers are LOCKED — do NOT re-ask**:
+
+1. **Editor save model = Draft + Save button.** Edits stay LOCAL in the editor; nothing validates
+   or rebuilds until the user clicks **Save**. Add **Save + Discard** + an unsaved-changes
+   indicator. Resync the draft to the committed `req` when it changes externally (import,
+   carry-forward, initial load). This removes the mid-edit error class. Also **reproduce + fix a
+   bug**: an in-progress invalid edit (user said "left a project unticked") produced an error that
+   required a **page refresh** to escape — make every error/fatal state recoverable (suspected: a
+   render crash or the `setFatal` path; App only shows fatal when `!req`, so dig for an actual
+   uncaught render exception with an empty-`teams` project).
+2. **Project view editable = BOTH** — (a) set the project's **weekly requirements** per
+   `(team, shift_type, role)` (counts/days, **including none for a week** = tweak #4) via
+   **draft→Save→rebuild**; (b) **assign people** to the resulting seats (immediate override).
+3. **All four views editable (assignments)** — Site (already), Project (from #2 above), and **Team
+   & Employee** people-as-rows views get a NEW interaction: click a person's day-cell to assign/
+   remove them from a seat that day. **Show the user this novel interaction before finalizing it.**
+4. **#4** (project may have no requirements for a week) is the "zero" case of #2's requirements
+   editing — verify a project absent from demand already renders cleanly ("No requirements this
+   week") and never errors.
+5. **View order + default (tweak #3): `Project · Team · Employee · Site`, default = Project.**
+   (Currently `Site · Team · Project · Employee`, default Site — see `App.tsx` `SCHEDULE_VIEWS`
+   + `scheduleView` initial state. Update `views.spec.ts` default-view expectations.)
+
+**KEY DESIGN SPLIT (align all work to this):** two edit kinds —
+- *Requirements* (counts/days incl. zero) → restructure the schedule → **draft → Save → rebuild**
+  (the editor, and now the Project view).
+- *Who fills a slot* (assignment) → **immediate**, re-validates the whole week (today's behavior)
+  → available in **all four views**.
+
+**Recommended sequence:** #3 (quick) → #1 (draft/Save + bug fix, medium) → #2/#4 (Project
+requirements+assignment editing, large) → Team/Employee person-row assignment editing (novel UX,
+confirm with user). Keep `DATA_MODEL.md`/`CONTEXT.md` in sync (this **reverses** the documented
+"overrides only in the Site view" Phase-6 decision — that's an approved change now). Run
+`/consult-codex` on the substantive parts (standing preference). Session task list (IDs 6–9) will
+NOT survive /clear — these five bullets are the source of truth.
+
+Relevant files: `frontend/src/App.tsx` (views + `scheduleView` state + `handleChange` override
+path + `handleRequirementsChange`), `frontend/src/components/Editor.tsx` (becomes draft-based),
+`ProjectView.tsx`/`RosterView.tsx` (gain editing), `ScheduleGrid.tsx`/`SeatCell.tsx` (the editable
+seat-cell pattern to reuse), `backend/app/requirements.py` (DemandIn — for project requirements
+editing). A non-coder ran the app via **Option B**: `cd frontend && npm run build`, then
+`cd backend && JAVA_HOME=/opt/homebrew/opt/openjdk@21 .venv/bin/python -m uvicorn app.main:app
+--port 8000 --host 127.0.0.1`, open http://localhost:8000.
+
+---
+
 ## Active goal (a session Stop hook enforces this — re-set it after /clear)
 
 > all phases are ready - all tests green: unit, e2e. write new edge cases test, also
@@ -49,21 +137,76 @@ Decisions already made (do NOT re-ask the user):
 
 ## Phase status
 
+> **ALL 6 PHASES COMPLETE + verified** (unit + e2e green, codex run + related-to per phase,
+> edge-case tests added, DATA_MODEL/CONTEXT kept in sync). Nothing is committed yet — the work
+> sits on `feat/employee-features-and-views`; commit when ready. DATA_MODEL §8 is now empty.
+
 - **Phase 1 — cross-site projects (ADR-0003): DONE + verified.** Backend hard cutover
   `Project.team_id`→`team_ids`; worker eligibility gained same-team rule (cross-site fill =
   Exceptional); coverage predicate updated; frontend multi-team checkboxes. Backend 881
   passed, full e2e 65 passed, codex APPROVE (only a doc line fixed). `test_crosssite.py` added.
-- **Phase 2 — inactive employees + HR metadata: CODE COMPLETE, VERIFICATION UNFINISHED.**
-  Done: `EmployeeIn` gained `status` + `employee_number/email/phone/hire_date/notes`
+- **Phase 2 — inactive employees + HR metadata: DONE + verified.**
+  `EmployeeIn` gained `status` + `employee_number/email/phone/hire_date/notes`
   (`EMPLOYEE_STATUSES`); `validate_requirements` checks the status value; `_coverage_warnings`
   + `to_dataset` use **active-only**; `dataset_to_requirements` emits HR defaults; frontend
-  `ReqEmployee` fields + Editor **status selector** (`data-testid="employee-status"`) + add-
-  employee defaults; `DATA_MODEL.md` §3 updated, §8 HR bullet removed. `tests/test_employee_status.py`
-  added — **6 pass in isolation**; frontend build + typecheck:e2e pass.
-  **NOT yet done (resume here):** (1) run the FULL backend suite (`pytest -q`) to confirm no
-  regression; (2) run e2e (at least `editor.spec.ts`; ideally full); (3) `/consult-codex` on
-  Phase 2 and relate to findings. Then mark Phase 2 done.
-- **Phases 3–6: NOT STARTED** (specs above + in DATA_MODEL.md §8).
+  `ReqEmployee` fields + Editor **status selector** (`data-testid="employee-status"`).
+  Verification: backend **894 passed**, full e2e **65 passed**, targeted e2e re-run after the
+  codex fixes (`ui_edge`+`editor`) **19 passed**. Codex (gpt-5.5 xhigh) returned CHANGES-NEEDED;
+  all 5 findings addressed: (1) `MAX_EMPLOYEES` now counts **active only** (status must not leak
+  into the solve-size guard); (2) carry-over continuity across a leave **documented** (DATA_MODEL
+  §5 — burden freezes on the retained `EmployeeIn`, resumes on reactivation) + pinned by a test;
+  (3) "unusable" warning is now **active-only**; (4) an override naming a non-active employee is
+  rejected with a clear **"not active"** error (not "unknown"); (5) added a **coverage↔built-seat-
+  eligibility parity test** (worker + manager arms) to stop the duplicated predicate drifting.
+  7 new edge-case tests in `tests/test_employee_status.py`. DATA_MODEL §3/§5 updated.
+- **Phase 3 — Unavailability (date-based): DONE + verified.** Domain `Employee` +
+  `EmployeeIn` gained `unavailable_dates` (strict ISO `YYYY-MM-DD`); `build_schedule` removes
+  an employee from a Seat's eligibility (worker + manager) for shifts starting on an
+  unavailable date (`_eligible_workers`/`_eligible_managers` now take `day`); EXC flag detail
+  names the unavailability when that's the cause (`analysis.py`); `_coverage_warnings` is
+  availability-aware (per-date worker + manager). Frontend: `ReqEmployee.unavailable_dates`
+  + `UnavailableDates` editor control (`data-testid` `employee-unavailable`/`unavail-add`/
+  `unavail-date`). Verification: backend **905 passed** (11 in `test_unavailability.py`), full
+  e2e **66 passed**. Codex (gpt-5.5 xhigh) APPROVE-WITH-NITS; all 3 nits fixed: strict
+  `_bad_date` (canonical YYYY-MM-DD), rigorous by-date manager parity test, override-accrues-
+  burden regression. Docs: DATA_MODEL §2/§3/§4 updated (§8 bullet removed); CONTEXT.md
+  "Unavailability" reconciled per-Shift→**per-date** to match the locked decision.
+- **Phase 4 — Preferred shift types (R11): DONE + verified.** New soft rule R11 (penalty for
+  an unmet shift-TYPE preference, never a reward): `Employee.preferred_shift_type_ids` +
+  `Seat.is_dispreferred_type()` (shared by `constraints.preferred_shift_type` and `analysis.py`
+  → parity); `W_PREFERRED_SHIFT_TYPE=8`; registry + `define_constraints` + parity `CANON`
+  extended. `EmployeeIn.preferred_shift_type_ids` validated against known shift types. Frontend
+  "prefers" chips + `lib/req.ts shiftTypeReferenced` now also blocks deleting a type referenced
+  by a preference. ⚠️ **GOTCHA**: Timefold's jpyinterpreter has no `frozenset.__bool__` — a
+  `bool(set)`/`not set` in a constraint path errors or silently INVERTS; use `len(set)==0`
+  (the predicate is in a domain method for this reason). Verification: backend **916 passed**
+  (`test_preferred_shift_type.py`), e2e **67 + delete-gate** green. Codex (gpt-5.5 xhigh)
+  CHANGES-NEEDED → fixed: shift-type delete gate (referential integrity) + edge tests
+  (duplicate-normalization, all-types-preferred, EXC+R11 stacking). DATA_MODEL §2/§3/§4
+  updated (§8 bullet removed); CONTEXT.md "Preference" extended to cover R11.
+- **Phase 5 — Import / export: DONE + verified.** New `backend/app/portability.py` + endpoints
+  `POST /api/export`, `POST /api/import`; frontend `ImportExport` toolbar atop the editor. JSON
+  is lossless (whole doc); CSV is a lossy employee roster (refs by name, id col 1, `;`-multivalue;
+  carry-over + avoid_shift_ids dropped). Mode-pluggable (`ImportMode`: replace / upsert_by_id /
+  upsert_by_name / replace_autocreate_refs); merged doc validated via the normal
+  `validate_requirements`. Verification: backend **937 passed** (`test_portability.py`, 21), e2e
+  full **72** + portability **4**. Codex (gpt-5.5 xhigh) CHANGES-NEEDED → all 7 fixed: upsert now
+  PRESERVES carry-over/avoid for matched rows (HIGH), ambiguous ref names are a loud error (HIGH),
+  `;`-in-name fails loud (HIGH), name-upsert keeps existing id + rejects dup keys (MED), autocreate
+  unions project teams across rows (MED), import size cap (MED), frontend surfaces import errors
+  (LOW). DATA_MODEL §7 updated (§8 import/export bullet removed).
+- **Phase 6 — read-only views (Site|Team|Project|Employee): DONE + verified.** Frontend-only:
+  a "View by" selector (`App.tsx`, `data-testid` `view-by`/`viewby-*`) over the existing
+  payload. **Site** = the editable `ScheduleGrid` (overrides only here; sitebar shown only here);
+  **Project** (`ProjectView.tsx`) = read-only seat grid per project, lanes = `(team,role)`,
+  aggregating seats across teams/sites (ADR-0003); **Team**/**Employee** (`RosterView.tsx`) =
+  read-only people-as-rows rosters (per-team / flat). Read-only views render no `SeatCell`.
+  Verification: full e2e **73** (`views.spec.ts`). Codex (gpt-5.5 xhigh) CHANGES-NEEDED → 3
+  ProjectView fixes: normalized null-role lane key, each cell names its shift type (two same-day
+  seats are distinguishable), cross-team badge from `project.team_ids` (the contract, not this
+  week's seats). DATA_MODEL §7 notes the view modes; §8 is now empty (all phases shipped).
+  Note: schedule views show materialized (active) employees only — inactive-roster management
+  is the Editor/export's job, by design.
 
 ## How to resume (fresh/compacted context)
 

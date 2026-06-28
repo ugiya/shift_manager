@@ -11,7 +11,7 @@ from app import analysis
 from app.constraints import CONSTRAINTS
 
 # The accepted rules from CONTEXT.md plus the override-only Exceptional Assignment.
-CANON = {"R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "EXC"}
+CANON = {"R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11", "EXC"}
 
 
 def _rules_emitted_by_analysis() -> set[str]:

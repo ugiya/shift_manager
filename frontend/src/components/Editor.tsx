@@ -1,5 +1,6 @@
 import type { ReqEmployee, RequirementsDoc } from "../types";
 import { DAY_NAMES } from "../types";
+import ImportExport from "./ImportExport";
 import {
   nextId,
   projectsForTeam,
@@ -12,8 +13,15 @@ import {
 } from "../lib/req";
 
 interface Props {
-  req: RequirementsDoc;
-  onChange: (next: RequirementsDoc) => void;
+  // Round 2 #1: the editor edits a LOCAL draft. Field edits call `onDraftChange` (no
+  // rebuild); the schedule only re-materialises when the user clicks Save (`onSave`).
+  // `onCommit` replaces+commits a whole doc (used by import). `onDiscard` reverts the draft.
+  draft: RequirementsDoc;
+  onDraftChange: (next: RequirementsDoc) => void;
+  onCommit: (next: RequirementsDoc) => void;
+  onSave: () => void;
+  onDiscard: () => void;
+  dirty: boolean;
   errors: string[];
   warnings: string[];
 }
@@ -23,11 +31,26 @@ const upd = <T extends { id: string }>(xs: T[], id: string, patch: Partial<T>) =
   xs.map((x) => (x.id === id ? { ...x, ...patch } : x));
 const rm = <T extends { id: string }>(xs: T[], id: string) => xs.filter((x) => x.id !== id);
 
-export default function Editor({ req, onChange, errors, warnings }: Props) {
-  const set = (part: Partial<RequirementsDoc>) => onChange({ ...req, ...part });
+export default function Editor({
+  draft, onDraftChange, onCommit, onSave, onDiscard, dirty, errors, warnings,
+}: Props) {
+  const req = draft;                                   // render & mutate the draft, not the committed doc
+  const set = (part: Partial<RequirementsDoc>) => onDraftChange({ ...req, ...part });
 
   return (
     <div className="editor" data-testid="editor">
+      <div className="esave" data-testid="editor-savebar">
+        <span className={`esave__status${dirty ? " is-dirty" : ""}`} data-testid="editor-dirty"
+          data-dirty={dirty}>
+          {dirty ? "● Unsaved changes — Save to apply & re-validate" : "All changes saved"}
+        </span>
+        <span className="esave__spacer" />
+        <button className="btn btn--sm" data-testid="editor-discard" disabled={!dirty}
+          onClick={onDiscard} title="Revert to the last saved version">Discard</button>
+        <button className="btn btn--sm btn--primary" data-testid="editor-save" disabled={!dirty}
+          onClick={onSave} title="Apply changes and re-validate the schedule">Save changes</button>
+      </div>
+      <ImportExport req={req} onChange={onCommit} />
       {(errors.length > 0 || warnings.length > 0) && (
         <div className="issues">
           {errors.length > 0 && (
@@ -142,7 +165,8 @@ export default function Editor({ req, onChange, errors, warnings }: Props) {
           roles: [], projects: [], can_manage: false,
           status: "active", employee_number: null, email: null, phone: null, hire_date: null, notes: null,
           carryover_burden: 0, worked_last_weekend: false,
-          prev_shift_end: null, prev_shift_was_night: false, avoid_shift_ids: [] }] })}>
+          prev_shift_end: null, prev_shift_was_night: false, avoid_shift_ids: [], unavailable_dates: [],
+          preferred_shift_type_ids: [] }] })}>
         {req.employees.map((e) => {
           const teamProjects = projectsForTeam(req, e.team);
           const toggle = (key: "roles" | "projects", id: string) => {
@@ -167,6 +191,11 @@ export default function Editor({ req, onChange, errors, warnings }: Props) {
               </select>
               <Chips label="roles" all={req.roles} selected={e.roles} onToggle={(id) => toggle("roles", id)} />
               <Chips label="projects" all={teamProjects} selected={e.projects} onToggle={(id) => toggle("projects", id)} />
+              <Chips label="prefers" all={req.shift_types} selected={e.preferred_shift_type_ids}
+                onToggle={(id) => set({ employees: upd(req.employees, e.id, {
+                  preferred_shift_type_ids: e.preferred_shift_type_ids.includes(id)
+                    ? e.preferred_shift_type_ids.filter((x) => x !== id)
+                    : [...e.preferred_shift_type_ids, id] }) })} />
               <label className="chk" data-testid="employee-canmanage">
                 <input type="checkbox" checked={e.can_manage}
                   onChange={(ev) => set({ employees: upd(req.employees, e.id, { can_manage: ev.target.checked }) })} /> can manage
@@ -184,6 +213,8 @@ export default function Editor({ req, onChange, errors, warnings }: Props) {
               </label>
               <label className="chk"><input type="checkbox" checked={e.prev_shift_was_night}
                 onChange={(ev) => set({ employees: upd(req.employees, e.id, { prev_shift_was_night: ev.target.checked }) })} /> prev night</label>
+              <UnavailableDates dates={e.unavailable_dates}
+                onChange={(dates) => set({ employees: upd(req.employees, e.id, { unavailable_dates: dates }) })} />
             </Row>
           );
         })}
@@ -280,6 +311,31 @@ function Row({ entity, id, canDelete, onDelete, children }: {
       <button className="btn btn--danger btn--sm" data-testid={`delete-${entity}`}
         disabled={!canDelete} title={canDelete ? "Delete" : "In use — remove references first"}
         onClick={onDelete}>Delete</button>
+    </div>
+  );
+}
+
+// Phase 3: an employee's Unavailability — ISO dates they can't work. Each date is
+// removed from the eligibility of seats whose shift starts that day (worker + manager).
+function UnavailableDates({ dates, onChange }: {
+  dates: string[]; onChange: (dates: string[]) => void;
+}) {
+  return (
+    <div className="chips" data-testid="employee-unavailable" title="Dates this person can't work">
+      <span className="chips__label">off:</span>
+      {dates.length === 0 && <span className="chips__none">none</span>}
+      {dates.map((d) => (
+        <button key={d} type="button" className="chip is-on" data-testid="unavail-date" data-date={d}
+          title="Remove" onClick={() => onChange(dates.filter((x) => x !== d))}>
+          {d} ×
+        </button>
+      ))}
+      <input className="in in--num" type="date" data-testid="unavail-add"
+        onChange={(ev) => {
+          const v = ev.target.value;
+          if (v && !dates.includes(v)) onChange([...dates, v].sort());
+          ev.target.value = "";
+        }} />
     </div>
   );
 }

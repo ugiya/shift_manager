@@ -5,10 +5,22 @@ import type {
 } from "./types";
 import { countFilled, siteIssues } from "./lib/lookups";
 import ScheduleGrid from "./components/ScheduleGrid";
+import ProjectView from "./components/ProjectView";
+import RosterView from "./components/RosterView";
 import FlagsPanel from "./components/FlagsPanel";
 import Editor from "./components/Editor";
+import ErrorBoundary from "./components/ErrorBoundary";
 
 type View = "schedule" | "editor";
+// Phase 6: how the schedule is laid out. Site is the editable seat grid; the rest are
+// read-only lenses on the same data — Project is seat-centric (cross-team), Team & Employee
+// are people-as-rows rosters. (Round 2 #3: order Project · Team · Employee · Site, default
+// Project; all four become editable for assignments — see ScheduleView usage below.)
+type ScheduleView = "site" | "team" | "project" | "employee";
+const SCHEDULE_VIEWS: { id: ScheduleView; label: string }[] = [
+  { id: "project", label: "Project" }, { id: "team", label: "Team" },
+  { id: "employee", label: "Employee" }, { id: "site", label: "Site" },
+];
 
 function emptyAssignments(ds: Dataset | null): Assignments {
   const a: Assignments = {};
@@ -18,6 +30,10 @@ function emptyAssignments(ds: Dataset | null): Assignments {
 
 export default function App() {
   const [req, setReq] = useState<RequirementsDoc | null>(null);
+  // Round 2 #1: the editor edits a LOCAL draft; nothing rebuilds/validates until Save
+  // commits it to `req`. Lifting the draft to App (not Editor-local) keeps unsaved edits
+  // alive across view switches. `dirty` = the draft differs from the committed doc.
+  const [draft, setDraft] = useState<RequirementsDoc | null>(null);
   const [dataset, setDataset] = useState<Dataset | null>(null);
   const [assignments, setAssignments] = useState<Assignments>({});
   const [score, setScore] = useState<ScoreInfo | null>(null);
@@ -25,8 +41,10 @@ export default function App() {
   const [errors, setErrors] = useState<string[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [view, setView] = useState<View>("schedule");
+  const [scheduleView, setScheduleView] = useState<ScheduleView>("project");
   const [solving, setSolving] = useState(false);
   const [validating, setValidating] = useState(false);
+  const [building, setBuilding] = useState(false);  // a committed-doc rebuild is in flight
   const [siteId, setSiteId] = useState<string>("");
   const [fatal, setFatal] = useState<string | null>(null);
   // Carry-over (ADR-0002): `carryover` is the seed currently applied to this week;
@@ -36,10 +54,24 @@ export default function App() {
   const reqToken = useRef(0);
   const buildToken = useRef(0);
 
-  // load the seed requirements once
-  useEffect(() => {
+  // load the seed requirements (re-runnable so the initial-load fatal screen can retry).
+  const loadRequirements = useCallback(() => {
+    setFatal(null);
     getRequirements().then(setReq).catch((e) => setFatal(String(e)));
   }, []);
+  useEffect(() => { loadRequirements(); }, [loadRequirements]);
+
+  // Resync the editor draft whenever the committed doc changes — initial load, a Save
+  // (req becomes the draft, so this is a no-op), carry-forward, or an import. This is the
+  // "resync to the committed req when it changes externally" rule from Round 2 #1.
+  useEffect(() => { setDraft(req); }, [req]);
+
+  // Unsaved edits exist when the draft diverges from the committed doc. A value compare
+  // (not reference) so a Save — which makes req === draft by value — clears it.
+  const dirty = useMemo(
+    () => req != null && draft != null && JSON.stringify(draft) !== JSON.stringify(req),
+    [req, draft],
+  );
 
   // rebuild (materialise) whenever the requirements change — debounced.
   // Editing the org invalidates any existing solution, so the schedule resets.
@@ -48,6 +80,10 @@ export default function App() {
     // Invalidate the stale next-week seed IMMEDIATELY (not after the debounce), so
     // the "Carry to next week" button can't be clicked during the rebuild window.
     setNextCarryover(null);
+    // `building` is true from the moment the committed doc changes until /api/build
+    // settles. It gates Solve/Carry so a Save of a now-invalid doc can't briefly leave
+    // the old (feasible) score on screen with Generate enabled (codex finding #1).
+    setBuilding(true);
     const token = ++buildToken.current;
     const h = setTimeout(async () => {
       try {
@@ -64,6 +100,8 @@ export default function App() {
         }
       } catch (e) {
         setFatal(String(e));
+      } finally {
+        if (token === buildToken.current) setBuilding(false);
       }
     }, 350);
     return () => clearTimeout(h);
@@ -140,8 +178,22 @@ export default function App() {
     setNextCarryover(null);
     setSolving(false);        // a superseded op won't clear its own spinner (token-gated)
     setValidating(false);
-    setReq(next);
+    // Invalidate the now-stale solution synchronously so the badge resets to "Not solved"
+    // immediately on Save (not after the debounced build) — no stale feasible score window.
+    setScore(null);
+    setFlags([]);
+    // Mark a rebuild in flight in the SAME commit (not only later in the build effect), so
+    // there's no render where dirty=false, building=false and an enabled Solve slips through.
+    setBuilding(true);
+    setReq(next);             // the draft-resync effect mirrors this back onto `draft`
   }, []);
+
+  // Round 2 #1: Save commits the draft (→ rebuild via the build effect); Discard reverts
+  // the draft to the committed doc. Both are no-ops when there's nothing to do.
+  const handleSave = useCallback(() => {
+    if (draft && dirty) handleRequirementsChange(draft);
+  }, [draft, dirty, handleRequirementsChange]);
+  const handleDiscard = useCallback(() => { setDraft(req); }, [req]);
 
   // Advance to the next week, seeded by the accepted schedule's carry-over
   // (ADR-0002). Bumps week_start to the seed's target week and applies the seed;
@@ -165,7 +217,18 @@ export default function App() {
 
   const issues = useMemo(() => (dataset ? siteIssues(dataset, assignments) : {}), [dataset, assignments]);
 
-  if (fatal && !req) return <div className="fatal" role="alert">Failed to load: {fatal}</div>;
+  if (fatal && !req) return (
+    <div className="fatal" role="alert" data-testid="fatal-screen">
+      <div className="fatal__box">
+        <strong>Failed to load the scheduler.</strong>
+        <p className="fatal__msg">{fatal}</p>
+        <div className="fatal__actions">
+          <button className="btn btn--primary" data-testid="fatal-retry" onClick={loadRequirements}>Try again</button>
+          <button className="btn" data-testid="fatal-reload" onClick={() => window.location.reload()}>Reload page</button>
+        </div>
+      </div>
+    </div>
+  );
   if (!req) return <div className="loading">Loading scheduler…</div>;
 
   const { filled, total } = dataset ? countFilled(dataset, assignments) : { filled: 0, total: 0 };
@@ -190,30 +253,58 @@ export default function App() {
             <button className={`viewtab${view === "editor" ? " is-active" : ""}`} data-testid="nav-editor"
               data-active={view === "editor"} onClick={() => setView("editor")}>
               Requirements{blocked ? ` (${errors.length}⚠)` : ""}
+              {dirty && <span className="viewtab__dirty" data-testid="nav-editor-dirty" title="Unsaved changes">&nbsp;●</span>}
             </button>
           </div>
           <ScoreBadge score={score} filled={filled} total={total} />
           <button className="btn btn--primary" data-testid="solve-button" onClick={handleSolve}
-            disabled={solving || blocked} title={blocked ? "Fix requirement errors first" : ""}>
+            disabled={solving || blocked || dirty || building}
+            title={dirty ? "Save your requirement changes first" : blocked ? "Fix requirement errors first" : ""}>
             {solving ? "Solving…" : score ? "Re-solve" : "Generate schedule"}
           </button>
           {nextCarryover?.target_week_start && (
             <button className="btn" data-testid="carry-button" onClick={handleCarryForward}
-              disabled={solving || validating || blocked}
-              title={`Seed the week of ${fmt(nextCarryover.target_week_start)} from this schedule`}>
+              disabled={solving || validating || blocked || dirty || building}
+              title={dirty ? "Save your requirement changes first"
+                : `Seed the week of ${fmt(nextCarryover.target_week_start)} from this schedule`}>
               Carry to {fmt(nextCarryover.target_week_start)} →
             </button>
           )}
         </div>
       </header>
 
+      {fatal && (
+        <div className="banner banner--error" data-testid="fatal-banner" role="alert">
+          Something went wrong: {fatal}
+          <button className="banner__dismiss" data-testid="fatal-dismiss"
+            onClick={() => setFatal(null)}>Dismiss</button>
+        </div>
+      )}
+
       {view === "editor" ? (
         <main className="editorwrap">
-          <Editor req={req} onChange={handleRequirementsChange} errors={errors} warnings={warnings} />
+          <ErrorBoundary resetKey="editor">
+            <Editor draft={draft ?? req} onDraftChange={setDraft} onCommit={handleRequirementsChange}
+              onSave={handleSave} onDiscard={handleDiscard} dirty={dirty}
+              errors={errors} warnings={warnings} />
+          </ErrorBoundary>
         </main>
       ) : (
         <>
-          {dataset && (
+          {/* The view-by nav + sitebar stay OUTSIDE the boundary so a crashed view can be
+              escaped by switching views/sites (which also bumps the boundary resetKey). */}
+          <nav className="viewby" data-testid="view-by" aria-label="View by">
+            <span className="viewby__label">View by:</span>
+            {SCHEDULE_VIEWS.map((v) => (
+              <button key={v.id} className={`viewby__btn${scheduleView === v.id ? " is-active" : ""}`}
+                data-testid={`viewby-${v.id}`} data-active={scheduleView === v.id}
+                onClick={() => setScheduleView(v.id)}>{v.label}</button>
+            ))}
+            {/* Round 2 #2/#4: every view now allows assignment overrides (Project also edits
+                requirements via draft→Save), so there is no read-only lens anymore. */}
+          </nav>
+
+          {dataset && scheduleView === "site" && (
             <nav className="sitebar" data-testid="sitebar" aria-label="Sites">
               {dataset.sites.map((s) => {
                 const iss = issues[s.id];
@@ -231,19 +322,32 @@ export default function App() {
           )}
 
           <main className="layout">
-            <div className="layout__main">
-              {blocked ? (
-                <div className="banner banner--error" data-testid="blocked-banner" role="alert">
-                  {errors.length} requirement error(s) — open <strong>Requirements</strong> to fix them.
-                </div>
-              ) : !score && !solving ? (
-                <div className="hint" data-testid="presolve-hint">
-                  Press <strong>Generate schedule</strong> to staff your org, then adjust any seat —
-                  every change re-checks the whole schedule. Edit the org under <strong>Requirements</strong>.
-                </div>
-              ) : null}
-              {dataset && <ScheduleGrid ds={dataset} teams={teams} assignments={assignments} onChange={handleChange} />}
-            </div>
+            <ErrorBoundary resetKey={scheduleView}>
+              <div className="layout__main">
+                {blocked ? (
+                  <div className="banner banner--error" data-testid="blocked-banner" role="alert">
+                    {errors.length} requirement error(s) — open <strong>Requirements</strong> to fix them.
+                  </div>
+                ) : !score && !solving ? (
+                  <div className="hint" data-testid="presolve-hint">
+                    Press <strong>Generate schedule</strong> to staff your org, then adjust any seat —
+                    every change re-checks the whole schedule. Edit the org under <strong>Requirements</strong>.
+                  </div>
+                ) : null}
+                {dataset && scheduleView === "site" &&
+                  <ScheduleGrid ds={dataset} teams={teams} assignments={assignments} onChange={handleChange} locked={dirty || building} />}
+                {dataset && scheduleView === "team" &&
+                  <RosterView ds={dataset} assignments={assignments} groupByTeam
+                    onChange={handleChange} locked={dirty || building} />}
+                {dataset && scheduleView === "employee" &&
+                  <RosterView ds={dataset} assignments={assignments} groupByTeam={false}
+                    onChange={handleChange} locked={dirty || building} />}
+                {dataset && scheduleView === "project" &&
+                  <ProjectView ds={dataset} assignments={assignments}
+                    draft={draft ?? req} onDraftChange={setDraft} onSave={handleSave}
+                    onDiscard={handleDiscard} dirty={dirty} building={building} onChange={handleChange} />}
+              </div>
+            </ErrorBoundary>
             <FlagsPanel flags={flags} score={score} validating={validating} />
           </main>
         </>

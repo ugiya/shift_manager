@@ -7,14 +7,20 @@ interface Props {
   teams: Team[];
   assignments: Assignments;
   onChange: (seatId: string, employeeId: string | null) => void;
+  locked?: boolean;
 }
 
-export default function ScheduleGrid({ ds, teams, assignments, onChange }: Props) {
+export default function ScheduleGrid({ ds, teams, assignments, onChange, locked = false }: Props) {
   const lk = buildLookups(ds);
   return (
     <div className="schedule">
+      {locked && (
+        <div className="banner banner--warn" data-testid="site-locked" role="status">
+          Requirement changes pending — Save or Discard them (in Requirements or Project) to edit assignments here.
+        </div>
+      )}
       {teams.map((team) => (
-        <TeamGrid key={team.id} team={team} ds={ds} lk={lk} assignments={assignments} onChange={onChange} />
+        <TeamGrid key={team.id} team={team} ds={ds} lk={lk} assignments={assignments} onChange={onChange} locked={locked} />
       ))}
     </div>
   );
@@ -26,12 +32,14 @@ function TeamGrid({
   lk,
   assignments,
   onChange,
+  locked,
 }: {
   team: Team;
   ds: Dataset;
   lk: ReturnType<typeof buildLookups>;
   assignments: Assignments;
   onChange: (seatId: string, employeeId: string | null) => void;
+  locked: boolean;
 }) {
   const types = shiftTypesForTeam(ds, team.id, lk);
   return (
@@ -67,6 +75,7 @@ function TeamGrid({
               lk={lk}
               assignments={assignments}
               onChange={onChange}
+              locked={locked}
             />
           ))}
         </div>
@@ -84,6 +93,7 @@ function RowFragment({
   lk,
   assignments,
   onChange,
+  locked,
 }: {
   stId: string;
   stName: string;
@@ -93,6 +103,7 @@ function RowFragment({
   lk: ReturnType<typeof buildLookups>;
   assignments: Assignments;
   onChange: (seatId: string, employeeId: string | null) => void;
+  locked: boolean;
 }) {
   return (
     <>
@@ -118,6 +129,7 @@ function RowFragment({
                 ds={ds}
                 assignedId={assignments[seat.id] ?? null}
                 onChange={onChange}
+                locked={locked}
               />
             ))}
           </div>

@@ -13,7 +13,7 @@ from itertools import combinations
 from .config import (DAYS_IN_WEEK, LEGAL_REST_MINUTES, NIGHT_REST_MINUTES,
                      W_CONSECUTIVE_WEEKEND, W_EXCEPTIONAL, W_FAIRNESS,
                      W_NIGHT_RECOVERY, W_ONE_SHIFT_PER_DAY, W_PREFERENCE,
-                     W_SIXTH_DAY, W_UNDERSTAFF)
+                     W_PREFERRED_SHIFT_TYPE, W_SIXTH_DAY, W_UNDERSTAFF)
 from .domain import Schedule, Seat, Shift
 
 HARD_WEIGHT = 10_000  # for sorting only; hard always sorts above soft
@@ -189,14 +189,33 @@ def derive_flags(schedule: Schedule, lookup: dict | None = None) -> list[dict]:
                 f"{emp_name(s.employee)} preferred not to work {shift_label(s.shift)}.",
                 employee=s.employee.id, shift=s.shift.id, seats=(s,)))
 
-    # Exceptional Assignment (soft, override-only)
+    # R11 honor preferred shift type (soft-mild): assigned a type not among the
+    # employee's (non-empty) preferences. Shares Seat.is_dispreferred_type() with
+    # constraints.preferred_shift_type so the two cannot drift.
+    for s in assigned:
+        if s.is_dispreferred_type():
+            flags.append(_flag(
+                "R11", "soft", W_PREFERRED_SHIFT_TYPE,
+                f"{emp_name(s.employee)} works a non-preferred shift type",
+                f"{emp_name(s.employee)} was assigned {shift_label(s.shift)} "
+                f"({s.shift.shift_type.name}), which isn't among their preferred shift types.",
+                employee=s.employee.id, shift=s.shift.id, seats=(s,)))
+
+    # Exceptional Assignment (soft, override-only). When the cause is the employee's
+    # Unavailability on the shift's date, name it — that's the actionable detail.
     for s in assigned:
         if not s.is_eligible(s.employee):
+            if s.shift.start_date in s.employee.unavailable_dates:
+                detail = (f"{emp_name(s.employee)} is unavailable on "
+                          f"{s.shift.start_dt:%a %d %b} but was assigned "
+                          f"{seat_label(s, lookup)} — needs sign-off.")
+            else:
+                detail = (f"{emp_name(s.employee)} is outside the normal eligibility for "
+                          f"{seat_label(s, lookup)} and needs sign-off.")
             flags.append(_flag(
                 "EXC", "soft", W_EXCEPTIONAL,
                 f"{emp_name(s.employee)} — exceptional assignment",
-                f"{emp_name(s.employee)} is outside the normal eligibility for "
-                f"{seat_label(s, lookup)} and needs sign-off.",
+                detail,
                 employee=s.employee.id, shift=s.shift.id, seats=(s,)))
 
     # R4 exact demand — understaffing (soft)

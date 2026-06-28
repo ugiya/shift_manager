@@ -14,7 +14,7 @@ from timefold.solver.score import (ConstraintCollectors, ConstraintFactory, Cons
 from .config import (DAYS_IN_WEEK, LEGAL_REST_MINUTES, NIGHT_REST_MINUTES,
                      W_CONSECUTIVE_WEEKEND, W_EXCEPTIONAL, W_FAIRNESS,
                      W_NIGHT_RECOVERY, W_ONE_SHIFT_PER_DAY, W_PREFERENCE,
-                     W_SIXTH_DAY, W_UNDERSTAFF)
+                     W_PREFERRED_SHIFT_TYPE, W_SIXTH_DAY, W_UNDERSTAFF)
 from .domain import Seat, Shift
 
 
@@ -38,6 +38,7 @@ CONSTRAINTS: dict[str, dict] = {
     "R8 preferred second day off": {"kind": "soft", "level": "soft", "rule": "R8"},
     "R9 fairness (burden balance)": {"kind": "soft", "level": "soft", "rule": "R9"},
     "R10 respect preferences": {"kind": "soft", "level": "soft", "rule": "R10"},
+    "R11 honor preferred shift type": {"kind": "soft", "level": "soft", "rule": "R11"},
     "Exceptional Assignment (needs sign-off)": {"kind": "soft", "level": "soft", "rule": "EXC"},
 }
 
@@ -193,6 +194,19 @@ def respect_preferences(cf: ConstraintFactory) -> Constraint:
             .as_constraint("R10 respect preferences"))
 
 
+def preferred_shift_type(cf: ConstraintFactory) -> Constraint:
+    # R11 (soft-mild): people may prefer certain shift TYPES (e.g. Mornings). Being
+    # assigned a shift whose type is NOT among their (non-empty) preferences is a mild
+    # Compromise. An empty preference set means "no preference" and is never penalised.
+    # `for_each(Seat)` yields only assigned seats, so `s.employee` is never None.
+    # `is_dispreferred_type()` (a domain method) holds the predicate so analysis.py mirrors
+    # it exactly and Timefold doesn't mistranslate a compound boolean lambda.
+    return (cf.for_each(Seat)
+            .filter(lambda s: s.is_dispreferred_type())
+            .penalize(HardMediumSoftScore.of_soft(W_PREFERRED_SHIFT_TYPE))
+            .as_constraint("R11 honor preferred shift type"))
+
+
 def exceptional_assignment(cf: ConstraintFactory) -> Constraint:
     # Eligibility-exceeding assignment. The solver can never create one (value
     # range = eligible only); it appears only via a manual Override and is
@@ -218,5 +232,6 @@ def define_constraints(cf: ConstraintFactory) -> list[Constraint]:
         preferred_second_day_off(cf),
         fairness_burden(cf),
         respect_preferences(cf),
+        preferred_shift_type(cf),
         exceptional_assignment(cf),
     ]

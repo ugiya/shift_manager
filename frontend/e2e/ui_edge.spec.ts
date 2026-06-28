@@ -10,6 +10,8 @@ async function solve(page: Page) {
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
   await expect(page.getByTestId("presolve-hint")).toBeVisible();
+  // Round 2 #3: the default view is now Project; these tests drive the editable Site grid.
+  await page.getByTestId("viewby-site").click();
 });
 
 test("each seat select offers unfilled, eligible names, and an exceptional optgroup", async ({ page }) => {

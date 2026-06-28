@@ -19,13 +19,15 @@ test("carry-over button is hidden until a schedule is generated", async ({ page 
   await expect(page.getByTestId("seeded-tag")).toHaveCount(0);
 });
 
-test("editing requirements after solving immediately hides the stale carry button", async ({ page }) => {
+test("saving a requirements change after solving immediately hides the stale carry button", async ({ page }) => {
   await solve(page);
   await expect(page.getByTestId("carry-button")).toBeVisible();
-  // Change the org: the next-week seed is derived from a schedule that no longer
-  // matches, so the Carry button must disappear at once (not after a debounce).
+  // Change the org and Save it (Round 2 #1: edits are local until Save): the next-week
+  // seed is derived from a schedule that no longer matches, so the Carry button must
+  // disappear at once on commit (not after a debounce).
   await page.getByTestId("nav-editor").click();
   await page.getByTestId("add-site").click();
+  await page.getByTestId("editor-save").click();
   await expect(page.getByTestId("carry-button")).toHaveCount(0);
 });
 

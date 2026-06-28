@@ -26,6 +26,7 @@ W_CONSECUTIVE_WEEKEND = 60  # R7  two weekends in a row
 W_EXCEPTIONAL = 50        # Exceptional Assignment (eligibility-exceeding override)
 W_SIXTH_DAY = 20          # R8  working a 6th day (only one day off)
 W_PREFERENCE = 10         # R10 working an avoided shift
+W_PREFERRED_SHIFT_TYPE = 8  # R11 assigned a shift TYPE the person doesn't prefer
 W_FAIRNESS = 5            # R9  burden-shift imbalance (per squared unit)
 
 # --- Resource limits (DoS / accidental blow-up guards) -----------------------

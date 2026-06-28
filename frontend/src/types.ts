@@ -122,6 +122,8 @@ export interface ReqEmployee {
   prev_shift_end: string | null; // local-naive ISO datetime; R3/R6 across the week boundary
   prev_shift_was_night: boolean;
   avoid_shift_ids: string[]; // negative preferences (R10); round-tripped, not yet edited here
+  unavailable_dates: string[]; // ISO dates the person can't work (Phase 3); removed from eligibility
+  preferred_shift_type_ids: string[]; // preferred shift TYPES (Phase 4, R11); unmet ⇒ soft penalty
 }
 export interface ReqDemand {
   team: string;

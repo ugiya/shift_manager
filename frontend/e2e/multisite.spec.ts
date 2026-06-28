@@ -17,6 +17,8 @@ async function solve(page: Page) {
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
   await expect(page.getByTestId("presolve-hint")).toBeVisible();
+  // Round 2 #3: the default view is now Project; the site tabs live in the Site view.
+  await page.getByTestId("viewby-site").click();
 });
 
 test("renders exactly four site tabs", async ({ page }) => {

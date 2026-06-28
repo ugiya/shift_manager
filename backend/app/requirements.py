@@ -15,7 +15,7 @@ rather than letting a naive/aware mismatch crash the solve/score path.
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from pydantic import BaseModel, Field
 
@@ -87,6 +87,8 @@ class EmployeeIn(BaseModel):
     prev_shift_end: str | None = None        # local-naive ISO datetime; R3/R6 across the week boundary
     prev_shift_was_night: bool = False       # whether that last shift was a Night Shift
     avoid_shift_ids: list[str] = Field(default_factory=list)  # negative Preferences (R10)
+    unavailable_dates: list[str] = Field(default_factory=list)  # ISO dates the person can't work
+    preferred_shift_type_ids: list[str] = Field(default_factory=list)  # preferred shift TYPES (R11)
 
 
 class DemandIn(BaseModel):
@@ -164,9 +166,12 @@ def _naive_datetime(s: str | None) -> datetime | None:
 
 
 def _bad_date(s: str) -> bool:
+    # Strict canonical YYYY-MM-DD only. `date.fromisoformat` also accepts ISO basic/week
+    # forms (e.g. '20260622', '2026-W26-1'); round-tripping through `.isoformat()` rejects
+    # those so the stored/round-tripped value is always canonical (matches the error text
+    # and keeps week-identity comparisons in the carry-over seed exact).
     try:
-        date.fromisoformat(s)
-        return False
+        return date.fromisoformat(s).isoformat() != s
     except (ValueError, TypeError):
         return True
 
@@ -265,7 +270,16 @@ def validate_requirements(req: RequirementsIn) -> tuple[list[str], list[str]]:
                 # solve/score path, so reject it at the edge.
                 errors.append(f"Employee {e.id!r}: prev_shift_end {e.prev_shift_end!r} "
                               f"must be a local (timezone-naive) ISO datetime.")
-        if not e.roles and not e.can_manage:
+        for d in e.unavailable_dates:
+            if _bad_date(d):
+                errors.append(f"Employee {e.id!r}: unavailable date {d!r} is not a valid "
+                              f"ISO date (YYYY-MM-DD).")
+        for stid in e.preferred_shift_type_ids:
+            if stid not in st_ids:
+                errors.append(f"Employee {e.id!r} prefers unknown shift type {stid!r}.")
+        # Only active employees are scheduled, so an "unusable" warning is meaningless
+        # for inactive / on-leave HR rows (they are intentionally never scheduled).
+        if e.status == "active" and not e.roles and not e.can_manage:
             warnings.append(f"Employee {e.id!r} has no role and cannot manage — unusable.")
 
     # demand
@@ -296,9 +310,13 @@ def validate_requirements(req: RequirementsIn) -> tuple[list[str], list[str]]:
     if req.week_start is not None and _bad_date(req.week_start):
         errors.append(f"week_start {req.week_start!r} is not a valid ISO date.")
 
-    # problem-size guards (resource exhaustion)
-    if len(req.employees) > MAX_EMPLOYEES:
-        errors.append(f"Too many employees: {len(req.employees)} exceeds the "
+    # problem-size guards (resource exhaustion). MAX_EMPLOYEES bounds *problem facts*
+    # — only active employees are materialised into the solve (to_dataset), so inactive
+    # / on-leave HR rows must not count against it (status never affects the solve).
+    # Total roster size (incl. inactive) is bounded separately by MAX_REQUEST_BYTES.
+    active_count = sum(1 for e in req.employees if e.status == "active")
+    if active_count > MAX_EMPLOYEES:
+        errors.append(f"Too many active employees: {active_count} exceeds the "
                       f"limit of {MAX_EMPLOYEES}.")
     est_seats = _estimated_seats(req)
     if est_seats > MAX_SEATS:
@@ -353,18 +371,44 @@ def apply_carryover_seed(req: RequirementsIn,
     return errors, warnings
 
 
+def _unavailable_on(emp: EmployeeIn, day: date) -> bool:
+    # `unavailable_dates` are validated as ISO before coverage runs (only reached when
+    # there are no blocking errors), so direct parsing is safe.
+    return any(date.fromisoformat(d) == day for d in emp.unavailable_dates)
+
+
+def _demand_dates(week_start: date, days: list[str]) -> list[date]:
+    """The concrete dates a demand's weekday names land on, mirroring build_schedule."""
+    weekdays = {DAY_TO_WEEKDAY[d] for d in days if d in DAY_TO_WEEKDAY}
+    return [week_start + timedelta(days=off) for off in range(7)
+            if (week_start + timedelta(days=off)).weekday() in weekdays]
+
+
 def _coverage_warnings(req: RequirementsIn, warnings: list[str]) -> None:
     # Only active employees are scheduled, so coverage must reason about them only —
     # otherwise an inactive manager would suppress the no-manager warning, etc.
+    # Mirrors worker/manager eligibility in data.py (active-only, same-team, role/project,
+    # and Unavailability per date); test_unavailability pins the two against built seats.
     active = [e for e in req.employees if e.status == "active"]
+    week_start = date.fromisoformat(req.week_start) if req.week_start else Dataset.week_start
     teams_with_demand = {d.team for d in req.demand}
     for team in req.teams:
         if team.id not in teams_with_demand:
             continue
-        if not any(e.team == team.id and e.can_manage for e in active):
+        managers = [e for e in active if e.team == team.id and e.can_manage]
+        if not managers:
             warnings.append(f"Team {team.id!r} has demand but no shift-manager-eligible "
                             f"employee — manager seats will be unfilled.")
+            continue
+        # Availability-aware: a date on which every eligible manager is unavailable.
+        dates = sorted({dt for d in req.demand if d.team == team.id
+                        for dt in _demand_dates(week_start, d.days)})
+        for dt in dates:
+            if all(_unavailable_on(m, dt) for m in managers):
+                warnings.append(f"Team {team.id!r} has no available shift manager on "
+                                f"{dt.isoformat()} — that manager seat will be unfilled.")
     for d in req.demand:
+        dates = _demand_dates(week_start, d.days)
         for pid, roles in d.crew.items():
             for rid in roles:
                 # Same-team predicate mirrors worker eligibility (ADR-0003): only an
@@ -374,6 +418,12 @@ def _coverage_warnings(req: RequirementsIn, warnings: list[str]) -> None:
                 if not eligible:
                     warnings.append(f"No employee can fill {rid} on {pid} — those seats "
                                     f"will be unfilled.")
+                    continue
+                # Availability-aware: a date on which every eligible worker is unavailable.
+                for dt in dates:
+                    if all(_unavailable_on(e, dt) for e in eligible):
+                        warnings.append(f"Everyone who can fill {rid} on {pid} is unavailable "
+                                        f"on {dt.isoformat()} — those seats will be unfilled.")
 
 
 # --- conversion --------------------------------------------------------------
@@ -390,6 +440,8 @@ def to_dataset(req: RequirementsIn) -> Dataset:
         Employee(e.id, e.name, e.team, frozenset(e.roles), frozenset(e.projects),
                  can_manage=e.can_manage,
                  avoid_shift_ids=frozenset(e.avoid_shift_ids),
+                 unavailable_dates=frozenset(date.fromisoformat(d) for d in e.unavailable_dates),
+                 preferred_shift_type_ids=frozenset(e.preferred_shift_type_ids),
                  carryover_burden=e.carryover_burden,
                  worked_last_weekend=e.worked_last_weekend,
                  prev_shift_end=_naive_datetime(e.prev_shift_end),
@@ -420,6 +472,8 @@ def dataset_to_requirements(ds: Dataset) -> dict:
             "status": "active", "employee_number": None, "email": None,
             "phone": None, "hire_date": None, "notes": None,
             "avoid_shift_ids": sorted(e.avoid_shift_ids),
+            "unavailable_dates": sorted(d.isoformat() for d in e.unavailable_dates),
+            "preferred_shift_type_ids": sorted(e.preferred_shift_type_ids),
             "carryover_burden": e.carryover_burden,
             "worked_last_weekend": e.worked_last_weekend,
             "prev_shift_end": e.prev_shift_end.isoformat() if e.prev_shift_end else None,

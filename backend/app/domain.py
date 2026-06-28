@@ -12,7 +12,7 @@ Maps directly onto CONTEXT.md:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Optional
 
 from timefold.solver.domain import (PlanningEntityCollectionProperty, PlanningId,
@@ -75,6 +75,13 @@ class Employee:
     project_ids: frozenset[str]
     can_manage: bool = False                     # eligible to be this team's Shift Manager
     avoid_shift_ids: frozenset[str] = frozenset()  # negative Preferences (R10)
+    # Dates the person is unavailable (e.g. leave). A Seat whose shift starts on one of
+    # these is built WITHOUT this employee in its value range, so the solver never assigns
+    # them then; a manual Override onto such a seat is an Exceptional Assignment (EXC).
+    unavailable_dates: frozenset[date] = frozenset()
+    # Shift TYPES the person prefers (e.g. Mornings). Non-empty ⇒ being assigned a shift of
+    # any OTHER type is a soft Compromise (R11). Empty ⇒ no preference, never penalised.
+    preferred_shift_type_ids: frozenset[str] = frozenset()
     # --- Carry-over ---
     carryover_burden: int = 0                    # burden shifts in recent weeks (R9 fairness)
     worked_last_weekend: bool = False            # R7 consecutive-weekend protection
@@ -133,6 +140,17 @@ class Seat:
 
     def is_eligible(self, emp: Employee) -> bool:
         return emp in self.eligible
+
+    def is_dispreferred_type(self) -> bool:
+        # R11: the assigned employee expressed shift-TYPE preferences and this shift's type
+        # is not among them. A method (not an inline lambda) so Timefold and analysis.py share
+        # one predicate. NOTE: use `len(...) == 0`, never `bool(set)`/`not set` — Timefold's
+        # jpyinterpreter has no `frozenset.__bool__`, so truthiness on the set mistranslates.
+        # Empty preferences ⇒ no preference ⇒ never True.
+        emp = self.employee
+        if emp is None or len(emp.preferred_shift_type_ids) == 0:
+            return False
+        return self.shift.shift_type.id not in emp.preferred_shift_type_ids
 
 
 # --- Planning solution -------------------------------------------------------

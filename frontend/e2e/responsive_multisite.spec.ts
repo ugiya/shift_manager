@@ -43,6 +43,7 @@ for (const vp of VIEWPORTS) {
     test(`no overflow at ${vp.name} on ${site} (pre-solve)`, async ({ page }) => {
       await page.setViewportSize({ width: vp.width, height: vp.height });
       await page.goto("/");
+      await page.getByTestId("viewby-site").click(); // Round 2 #3: site tabs live in the Site view
       await page.locator(`[data-testid=site-tab][data-site-id="${site}"]`).click();
       await assertClean(page, `${vp.name}/${site}`);
     });
@@ -55,6 +56,7 @@ test("no overflow at any viewport on any site (post-solve)", async ({ page }) =>
   await page.goto("/");
   await page.getByTestId("solve-button").click();
   await expect(page.getByTestId("score-badge")).toHaveAttribute("data-feasible", "true");
+  await page.getByTestId("viewby-site").click(); // Round 2 #3: site tabs live in the Site view
   for (const vp of VIEWPORTS) {
     await page.setViewportSize({ width: vp.width, height: vp.height });
     for (const site of SITES) {
@@ -68,6 +70,8 @@ test("no overflow at any viewport on any site (post-solve)", async ({ page }) =>
 test("the site tab bar itself never overflows the page (mobile)", async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 667 });
   await page.goto("/");
+  await page.getByTestId("viewby-site").click(); // Round 2 #3: the site tab bar lives in the Site view
+  await expect(page.getByTestId("sitebar")).toBeVisible();
   // the bar may scroll internally, but must not widen the page
   const scroll = await page.evaluate(
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,

@@ -6,6 +6,9 @@ interface Props {
   ds: Dataset;
   assignedId: string | null;
   onChange: (seatId: string, employeeId: string | null) => void;
+  // Round 2: while unsaved requirement edits (or a rebuild) are pending, the next Save resets
+  // assignments — so the seat is read-only to avoid clobbering an edit that won't survive.
+  locked?: boolean;
 }
 
 function options(ds: Dataset, seat: Seat): { eligible: Employee[]; other: Employee[] } {
@@ -19,7 +22,7 @@ function options(ds: Dataset, seat: Seat): { eligible: Employee[]; other: Employ
   return { eligible, other };
 }
 
-export default function SeatCell({ seat, ds, assignedId, onChange }: Props) {
+export default function SeatCell({ seat, ds, assignedId, onChange, locked = false }: Props) {
   const state = seatState(seat, assignedId);
   const { eligible, other } = options(ds, seat);
 
@@ -33,6 +36,8 @@ export default function SeatCell({ seat, ds, assignedId, onChange }: Props) {
         className="seat__select"
         data-testid={`seat-select-${seat.id}`}
         value={assignedId ?? ""}
+        disabled={locked}
+        title={locked ? "Finish requirement changes first, then assign" : undefined}
         onChange={(e) => onChange(seat.id, e.target.value || null)}
       >
         <option value="">— unfilled —</option>

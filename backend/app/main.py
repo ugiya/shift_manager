@@ -20,6 +20,7 @@ from .analysis import derive_flags
 from .carryover import carryover_seed, empty_carryover_seed
 from .config import ALLOWED_ORIGINS, MAX_REQUEST_BYTES, MAX_SOLVE_SECONDS
 from .data import build_lookup, build_schedule, default_dataset
+from .portability import ImportMode, export, import_document
 from .requirements import (CarryoverSeedIn, RequirementsIn, apply_carryover_seed,
                            dataset_to_requirements, to_dataset, validate_requirements)
 from .serialize import (apply_assignments, assignments_of, dataset_payload,
@@ -136,7 +137,11 @@ def post_validate(req: ValidateRequest) -> dict:
                 "score": None, "flags": [], "next_carryover": empty_carryover_seed()}
     ds, schedule, lookup = mat
     employees_by_id = {e.id: e for e in ds.employees}
-    assignment_errors = validate_assignments(schedule, req.assignments, employees_by_id)
+    # Retained-but-non-active ids: an override naming one gets a clear "not active"
+    # error instead of "unknown employee" (status excludes them from scheduling).
+    inactive_ids = {e.id for e in req.requirements.employees} - employees_by_id.keys()
+    assignment_errors = validate_assignments(schedule, req.assignments, employees_by_id,
+                                             inactive_ids)
     if assignment_errors:
         return {"errors": assignment_errors, "warnings": warnings, "dataset": None,
                 "assignments": {}, "score": None, "flags": [],
@@ -151,6 +156,47 @@ def post_validate(req: ValidateRequest) -> dict:
         "flags": derive_flags(schedule, lookup),
         "next_carryover": carryover_seed(schedule, ds.week_start, feasible=score["feasible"]),
     }
+
+
+class ExportRequest(BaseModel):
+    requirements: RequirementsIn
+    format: str = "json"               # "json" (lossless) | "csv" (lossy roster)
+
+
+class ImportRequest(BaseModel):
+    requirements: RequirementsIn       # the current document (base for CSV ref-resolution / merge)
+    format: str = "json"
+    mode: ImportMode = ImportMode.REPLACE
+    content: str                       # the uploaded file's text
+
+
+@app.post("/api/export")
+def post_export(req: ExportRequest) -> dict:
+    """Serialize the current document. JSON is lossless; CSV is a lossy employee roster."""
+    try:
+        content, filename = export(req.requirements, req.format)
+    except ValueError as exc:
+        return {"errors": [str(exc)], "content": "", "filename": "", "lossy": False}
+    return {"errors": [], "content": content, "filename": filename, "lossy": req.format == "csv"}
+
+
+@app.post("/api/import")
+def post_import(req: ImportRequest) -> dict:
+    """Parse + merge an uploaded file into the current document, then validate it through the
+    normal requirements flow (reused, not duplicated). Returns the merged document so the
+    client can adopt it; validation errors/warnings are surfaced for the editor."""
+    merged, parse_errors, parse_warnings = import_document(
+        req.requirements, req.content, req.format, req.mode)
+    if parse_errors:
+        return {"errors": parse_errors, "warnings": parse_warnings, "requirements": None}
+    try:
+        merged_req = RequirementsIn(**merged)
+    except Exception as exc:                       # malformed document shape
+        return {"errors": [f"Imported document is not valid: {exc}"],
+                "warnings": parse_warnings, "requirements": None}
+    errors, warnings = validate_requirements(merged_req)
+    return {"errors": errors, "warnings": parse_warnings + warnings,
+            "requirements": merged_req.model_dump()}
 
 
 # --- Serve the built frontend (single-origin for e2e / Claude-in-Chrome) -----

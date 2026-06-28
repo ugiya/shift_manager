@@ -78,24 +78,34 @@ def assignments_of(schedule: Schedule) -> dict[str, str | None]:
 
 
 def validate_assignments(schedule: Schedule, assignments: dict[str, str | None],
-                         employees_by_id: dict) -> list[str]:
+                         employees_by_id: dict, inactive_ids: set | None = None) -> list[str]:
     """Errors for an assignments map: every key must be a real seat id and every
     non-null value a real employee id. Catches stale client state instead of
     silently masking an unknown employee as 'unfilled'.
+
+    `employees_by_id` holds only the schedulable (active) employees. An override
+    that names a *retained but non-active* employee (in `inactive_ids`) is rejected
+    with a clear "not active" message rather than the misleading "unknown" — inactive
+    / on-leave people cannot be scheduled even via an Exceptional override.
 
     Snapshot semantics (not patch): the map is the *complete* desired state. The
     service is stateless — each call rebuilds the Schedule with every seat empty and
     then applies the map — so a seat that is absent (or null) is intentionally
     unassigned. There is no prior server state to "leave unchanged", which is why a
     missing seat id is not an error: best-effort scheduling allows unfilled seats."""
+    inactive_ids = inactive_ids or set()
     errors: list[str] = []
     seat_ids = {s.id for s in schedule.seats}
     for seat_id, emp_id in assignments.items():
         if seat_id not in seat_ids:
             errors.append(f"Assignment references unknown seat id {seat_id!r}.")
         if emp_id is not None and emp_id not in employees_by_id:
-            errors.append(f"Assignment for seat {seat_id!r} references unknown "
-                          f"employee id {emp_id!r}.")
+            if emp_id in inactive_ids:
+                errors.append(f"Assignment for seat {seat_id!r} references employee "
+                              f"id {emp_id!r}, who is not active and cannot be scheduled.")
+            else:
+                errors.append(f"Assignment for seat {seat_id!r} references unknown "
+                              f"employee id {emp_id!r}.")
     return errors
 
 

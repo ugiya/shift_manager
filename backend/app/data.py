@@ -223,16 +223,20 @@ def _mk_shift(shift_id: str, st: ShiftType, day: date, team_id: str, site_id: st
     return Shift(shift_id, st, team_id, site_id, start, end)
 
 
-def _eligible_workers(employees, project_id, role_id, team_id):
+def _eligible_workers(employees, project_id, role_id, team_id, day):
     # ADR-0003: a worker is eligible only for seats in their OWN team. For a project
     # that runs across teams/sites, each site staffs its own seats; a cross-site fill
     # is an Exceptional Assignment reachable only via a manual override.
+    # An employee Unavailable on `day` is excluded from the value range for that date's
+    # seats, so the solver never assigns them then (a manual override is Exceptional).
     return [e for e in employees
-            if project_id in e.project_ids and role_id in e.role_ids and e.team_id == team_id]
+            if project_id in e.project_ids and role_id in e.role_ids and e.team_id == team_id
+            and day not in e.unavailable_dates]
 
 
-def _eligible_managers(employees, team_id):
-    return [e for e in employees if e.team_id == team_id and e.can_manage]
+def _eligible_managers(employees, team_id, day):
+    return [e for e in employees if e.team_id == team_id and e.can_manage
+            and day not in e.unavailable_dates]
 
 
 def build_schedule(dataset: Dataset) -> Schedule:
@@ -259,14 +263,14 @@ def build_schedule(dataset: Dataset) -> Schedule:
                 seen_mgr.add(mgr_seat_id)
                 seats.append(Seat(
                     mgr_seat_id, "manager", shift, team_id, None, None,
-                    eligible=_eligible_managers(dataset.employees, team_id)))
+                    eligible=_eligible_managers(dataset.employees, team_id, day)))
             for project_id, role_counts in crew.items():
                 for role_id, count in role_counts.items():
                     for n in range(count):
                         seats.append(Seat(
                             f"seat-{shift_id}-{project_id}-{role_id}-{n}",
                             "worker", shift, team_id, project_id, role_id,
-                            eligible=_eligible_workers(dataset.employees, project_id, role_id, team_id)))
+                            eligible=_eligible_workers(dataset.employees, project_id, role_id, team_id, day)))
 
     return Schedule(list(dataset.employees), list(shifts.values()), seats)
 

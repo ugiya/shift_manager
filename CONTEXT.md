@@ -59,16 +59,23 @@ own. A role, not necessarily a distinct person.
 _Avoid_: planner, admin, operator.
 
 **Unavailability**:
-A hard fact that an employee cannot be assigned to a Shift (approved time off,
-sick leave, an external commitment). Granular per Shift; employees are available
-by default. In v1 it is entered by the Scheduler and is simply true once
-entered — there is no pending/approval state.
+A firm fact that an employee cannot work on a given day (approved time off, sick
+leave, an external commitment). Granular **per date** (a calendar day) — every
+Shift starting on that date is affected; employees are available by default. It is
+enforced by **removing the employee from the eligibility (value range) of those
+dates' Seats**, so the optimizer never assigns them then. A Scheduler may still
+Override an unavailable employee onto a Seat; that is an Exceptional Assignment
+(a Compromise that needs sign-off), not a hard block. In v1 it is entered by the
+Scheduler and is simply true once entered — there is no pending/approval state.
 _Avoid_: absence, leave, block.
 
 **Preference**:
 A soft statement that an employee would rather (or rather not) work certain
 Shifts. Violating a Preference is a Compromise the optimizer may accept
-automatically and report — never a hard block.
+automatically and report — never a hard block. Two forms exist: a *negative*
+per-Shift preference ("I'd rather not work this shift", R10) and a *positive*
+per-Shift-Type preference ("I prefer Mornings", R11) — the latter penalises being
+assigned a type the employee did not list (an empty list means no preference).
 _Avoid_: wish, request, constraint.
 
 ### Shifts

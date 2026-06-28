@@ -49,6 +49,7 @@ async function assertNoOverflow(page: Page, label: string) {
 test("no element overflows its bounds at any viewport (pre-solve)", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByTestId("presolve-hint")).toBeVisible();
+  await page.getByTestId("viewby-site").click(); // Round 2 #3: exercise the (widest) Site grid
   for (const vp of VIEWPORTS) {
     await page.setViewportSize({ width: vp.width, height: vp.height });
     await page.waitForTimeout(150);
@@ -61,6 +62,7 @@ test("no element overflows its bounds at any viewport (post-solve, fully populat
   await page.goto("/");
   await page.getByTestId("solve-button").click();
   await expect(page.getByTestId("score-badge")).toHaveAttribute("data-feasible", "true");
+  await page.getByTestId("viewby-site").click(); // Round 2 #3: exercise the (widest) Site grid
   for (const vp of VIEWPORTS) {
     await page.setViewportSize({ width: vp.width, height: vp.height });
     await page.waitForTimeout(150);
@@ -71,6 +73,7 @@ test("no element overflows its bounds at any viewport (post-solve, fully populat
 test("the wide schedule grid is reachable via horizontal scroll on mobile (not clipped)", async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 667 });
   await page.goto("/");
+  await page.getByTestId("viewby-site").click(); // Round 2 #3: the Site grid is the wide one under test
   // the grid lives in a horizontal scroller, so its content is wider than the cell box
   const scrollable = await page.locator(".grid-scroll").first().evaluate((el) => el.scrollWidth > el.clientWidth + 1);
   expect(scrollable, "schedule grid should scroll horizontally rather than clip on mobile").toBe(true);
@@ -81,6 +84,7 @@ test("text inside seats and flags stays within its box (no spill) after solving"
   await page.goto("/");
   await page.getByTestId("solve-button").click();
   await expect(page.getByTestId("score-badge")).toHaveAttribute("data-feasible", "true");
+  await page.getByTestId("viewby-site").click(); // Round 2 #3: seat text lives in the Site grid
   // wrapping text containers must not have content taller-clipped or wider than their box
   const spill = await page.evaluate(() => {
     const sel = [".seat__labeltext", ".flag__title", ".flag__detail", ".team__title", ".hint"];

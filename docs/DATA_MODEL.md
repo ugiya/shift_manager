@@ -42,7 +42,9 @@ names are display only.
 - **ShiftType** (`:55`) — `id, name, is_night, start_hour (0-23), end_hour (0-23)`.
   `end_hour <= start_hour` ⇒ the shift crosses midnight. Reusable, date-independent.
 - **Employee** (`:64`) — `id, name, team_id, role_ids: frozenset, project_ids: frozenset,
-  can_manage`, plus `avoid_shift_ids: frozenset` (shifts they'd rather not work) and
+  can_manage`, plus `avoid_shift_ids: frozenset` (shifts they'd rather not work),
+  `unavailable_dates: frozenset[date]` (dates they can't work — see eligibility below),
+  `preferred_shift_type_ids: frozenset[str]` (preferred shift TYPES — drives R11), and
   the **carry-over** fields `carryover_burden, worked_last_weekend, prev_shift_end, prev_shift_was_night`.
   An employee is in **one team**, holds **roles**, and (as a worker) belongs to **projects** within that team.
 - **Shift** (`:85`) — `id, shift_type, team_id, site_id, start_dt, end_dt`. A ShiftType
@@ -62,9 +64,12 @@ for each demand row, for each selected weekday in the week, create the Shift, **
 manager seat** (eligible = team members with `can_manage`, `:230`), and **one worker
 seat per (project, role, count)** (eligible = employees who have that project in
 `project_ids`, that role in `role_ids`, **and are in the seat's own team**
-(`employee.team_id == seat.team_id`, ADR-0003), `:226`). The solver never assigns
-outside `eligible`; a manual override outside it — including staffing a cross-site
-project's seat from another site — is an **Exceptional Assignment** (see §4).
+(`employee.team_id == seat.team_id`, ADR-0003), `:226`). **Unavailability:** an employee
+whose `unavailable_dates` contains the shift's `start_date` is **removed from that seat's
+`eligible`** (worker *and* manager, `:226`/`:234`), so the solver never assigns them then.
+The solver never assigns outside `eligible`; a manual override outside it — including
+staffing a cross-site project's seat from another site, or assigning someone on an
+unavailable date — is an **Exceptional Assignment** (see §4).
 
 Stable id formats: shift `shift-{team}-{shiftType}-{date}`; manager seat
 `seat-{shift_id}-mgr`; worker seat `seat-{shift_id}-{project}-{role}-{n}`.
@@ -88,7 +93,25 @@ field names (e.g. `ShiftTypeIn.start/end`, `TeamIn.site`, `ProjectIn.teams`).
   `employee_number, email, phone, hire_date, notes`. Only `status == "active"` employees are
   materialised by `to_dataset` and counted in coverage warnings; inactive/on-leave people
   stay in the roster (and export) but are never scheduled. The domain `Employee` does NOT
-  carry HR metadata — it's an input/export concern.
+  carry HR metadata — it's an input/export concern. Because status must never affect the
+  solve, **non-active rows also don't count against `MAX_EMPLOYEES`** (which bounds problem
+  facts) — only `active` employees do; total roster size is bounded by `MAX_REQUEST_BYTES`.
+  The "no role and cannot manage — unusable" warning is **active-only** for the same reason.
+  A manual override naming a non-active employee is **rejected** (not made Exceptional) with
+  a "not active" error, since inactive people cannot be scheduled even exceptionally.
+- **Unavailability** on `EmployeeIn`: `unavailable_dates: list[str]` (strict ISO `YYYY-MM-DD`;
+  `_bad_date` rejects non-canonical forms). Each entry is validated as a real date (a bad value
+  is a blocking error); `to_dataset` converts them to the domain `frozenset[date]`. A date
+  **outside the scheduled week is retained but inert** (it only affects the week it falls in) —
+  intentional, so a client can keep a persistent roster of future leave. Coverage warnings are
+  **availability-aware**:
+  besides the structural "No employee can fill {role} on {project}", a date on which *every*
+  otherwise-eligible worker/manager is unavailable yields an "everyone … is unavailable on
+  {date}" / "no available shift manager on {date}" warning.
+- **Preferred shift types** on `EmployeeIn`: `preferred_shift_type_ids: list[str]` (each must
+  reference a known shift type — an unknown id is a blocking error). A **non-empty** set means
+  "I prefer these types"; being assigned any *other* type is a soft Compromise (R11, a PENALTY
+  — never a reward). Empty ⇒ no preference. `to_dataset` converts to the domain `frozenset[str]`.
 - `validate_requirements` returns `(errors, warnings)`; `to_dataset` converts to `Dataset`.
 
 ---
@@ -123,7 +146,8 @@ They usually match; the deliberate exception is coverage (`kind=soft`, `level=me
 | **R8** | Prefer a second day off (working 6 days is discouraged) | soft |
 | **R9** | Fairness — spread night/weekend "burden" shifts evenly (cumulative across weeks) | soft |
 | **R10** | Respect "I'd rather not work this shift" preferences | soft |
-| **EXC** | Exceptional Assignment — someone placed outside their normal role/project/team eligibility; only via a manual override, needs sign-off | soft |
+| **R11** | Honor a "prefers these shift types" preference — assigning a non-preferred type is penalised (a PENALTY for an unmet preference, never a reward; empty preference set = no penalty) | soft |
+| **EXC** | Exceptional Assignment — someone placed outside their normal role/project/team eligibility (or on a date they're **unavailable**); only via a manual override, needs sign-off. When the cause is unavailability, `analysis.py` names the date in the flag detail. | soft |
 
 `score_breakdown` (`solver.py:60`) returns `{score, hard_score, medium_score, soft_score,
 feasible (=hard>=0), constraints:[{name, rule, kind, level, match_count, score}]}`.
@@ -147,6 +171,13 @@ re-derive it from memory.
 - **Back in:** the client submits that envelope as the optional request field
   `carryover_seed`; `apply_carryover_seed` rejects a non-empty seed whose
   `target_week_start` is missing or ≠ the requested week, then merges it.
+- **Continuity across a leave (status interaction):** `next_carryover` only emits entries
+  for materialised (active) employees, so an employee inactive for a week is *absent* from
+  it. `apply_carryover_seed` only overwrites employees present in the seed, so an absent
+  employee's carry-over fields on the client's retained `EmployeeIn` are left untouched.
+  Net effect: an employee's carry-over **freezes at its last value during a leave** (they
+  accrue no new burden because they work nothing) and **resumes on reactivation** — no
+  continuity loss, provided the client keeps the requirements doc (its source of truth).
 
 ---
 
@@ -163,8 +194,33 @@ Mixing aware + naive crashes the solver/score path; don't reintroduce it.
 ## 7. Output payload & API (`backend/app/serialize.py`, `backend/app/main.py`)
 
 Endpoints: `GET /api/health`, `GET /api/requirements` (seed doc), `POST /api/build`,
-`POST /api/solve`, `POST /api/validate`. Solve/validate return
-`{errors, warnings, dataset, assignments, score, flags, next_carryover}`.
+`POST /api/solve`, `POST /api/validate`, `POST /api/export`, `POST /api/import`. Solve/validate
+return `{errors, warnings, dataset, assignments, score, flags, next_carryover}`.
+
+**Import / export** (`backend/app/portability.py`, Phase 5): `POST /api/export`
+`{requirements, format}` → `{content, filename, lossy}`. `POST /api/import`
+`{requirements, format, mode, content}` → `{errors, warnings, requirements}` (the merged doc,
+or `null` on a parse error). Two formats:
+- **JSON** — *lossless*: the full `RequirementsIn` document; import always replaces the whole
+  document (any non-`replace` mode is ignored with a warning).
+- **CSV** — *lossy* employee roster only: references (team/roles/projects/preferred shift
+  types) written by **name**, internal `id` in **column 1**, `;`-separated multi-values.
+  `avoid_shift_ids` and the carry-over fields are **not exported**. On a **replace** import (and
+  for newly-added rows) they reset to defaults; on an **upsert** of a matched employee they are
+  **preserved** from the existing record (the CSV only patches the fields it carries). Names with
+  commas/quotes round-trip (CSV quoting); a name containing `;` cannot (it's the multi-value
+  separator) and an **ambiguous (duplicated) reference name is a hard error** — the lossy roster
+  assumes reference names are `;`-free and unique. The `id` column lets a round-trip match rows
+  back exactly.
+
+Import is **mode-pluggable** (`ImportMode`): `replace` (default), `upsert_by_id`,
+`upsert_by_name` (matches by name, never rewrites the matched employee's `id`),
+`replace_autocreate_refs` (replace + create any referenced role/shift-type/project/team that
+doesn't exist — auto-created teams land under the first site; an auto-created project unions in
+the team of every row that uses it). Duplicate upsert keys (in the base or the file) are
+rejected. The merged document is validated through the normal `validate_requirements` flow
+(reused, not duplicated); a structurally-valid import with validation errors is still returned
+so the editor can surface them. An oversized upload is rejected before parsing.
 
 `dataset_payload` (`serialize.py:9`) carries everything the UI needs to render ANY view
 without more backend work: `sites, week_start, days[7], roles, teams, projects,
@@ -173,20 +229,33 @@ shift_types, employees, shifts (with team_id/site_id/date/is_night/is_weekend), 
 `{seat_id: employee_id|null}`. The frontend mirror of all these shapes is
 `frontend/src/types.ts` — **keep it in sync**.
 
+Because the payload is view-agnostic, the frontend offers four **view modes** over the same
+data (Phase 6, frontend-only): **Site** (seat grid per team), **Project** (seat-centric,
+aggregating a project's seats across teams/sites per ADR-0003), **Team** and **Employee**
+(people-as-rows rosters). The "View by" selector orders them **Project · Team · Employee ·
+Site** and defaults to **Project** (Round 2 #3).
+
+**All four views are editable for assignments** (Round 2 #2/#4 — this *reverses* the original
+Phase-6 "overrides only in the Site view" decision). Site & Project place people via a seat
+dropdown (`SeatCell`); Team & Employee use a per-cell **seat-picker** (eligible seats first,
+then exceptional). Every assignment override is **immediate** and re-validates the whole week
+(the *who-fills-a-slot* edit kind). The **Project view additionally edits requirements** — per
+`(team, shift_type, role)` crew **counts** (steppers) and which **days** the shift runs
+(toggles), including reducing a project to **none** ("No requirements this week"). Those are
+the *requirements* edit kind: they mutate the **draft** and take effect only on **Save**.
+
+The editor (and the Project view's requirement controls) edit a **local draft** (Round 2 #1):
+field edits do not rebuild or re-validate until the user clicks **Save** (Discard reverts; an
+import / carry-forward / initial load resyncs the draft). Solve and Carry are gated while
+there are unsaved edits, so a stale doc can't be solved. **Assignment editing is also paused
+in every view while requirement edits are unsaved (or a rebuild is in flight)** — the Save
+rebuild resets assignments, so editing one first would silently lose it. This is a
+UI-interaction concern only — it does not change the data model, the scoring levels, or the
+carry-over contract.
+
 ---
 
 ## 8. Planned / in-flight changes (NOT yet built — do not treat as current)
 
-Agreed in conversation, pending implementation. Move each into the sections above
-**as it lands**, and delete it from here.
-
-- **Employee import/export**: CSV (HR-friendly, lossy, references by name, `id` as col 1)
-  + JSON (lossless). Replace-all default, mode-pluggable (upsert / auto-create-refs).
-- **New read-only views**: Team & Employee (people-as-rows roster), Project (seat-centric).
-  Site view stays editable. Frontend-only (data already in the payload).
-- **Unavailability** (new): date-based `unavailable_dates` on the employee; enforced by
-  removing them from `Seat.eligible` for shifts on those dates (override ⇒ Exceptional,
-  plus availability-aware coverage warnings).
-- **Preferred shifts** (new, **shift-type level**): a soft rule penalising an unmet
-  preference (e.g. worked a Night while preferring Mornings). Will add a new rule id +
-  mirror in `analysis.py` + extend the parity CANON.
+_All planned features through Phase 6 have landed and moved into the sections above._
+New plans get added here first, then move up as they ship.
