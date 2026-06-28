@@ -41,6 +41,10 @@ in [`docs/adr/`](./docs/adr).
 
 ## Prerequisites
 
+> **On Windows or Linux?** See the step-by-step cross-platform guide
+> [`docs/OPERATIONS.md`](./docs/OPERATIONS.md) (install · run · test · maintain for
+> Windows / macOS / Linux). The quickstart below is macOS.
+
 ```bash
 brew install openjdk@21        # any JDK 17+; JAVA_HOME defaults to this path
 # Python 3.12 via uv (https://docs.astral.sh/uv/) and Node 18+
