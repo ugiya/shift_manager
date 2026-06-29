@@ -236,25 +236,31 @@ JAVA_HOME=/path/to/jdk .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1
 ```
 
 ### Truly air-gapped target (never online): build a bundle on a staging machine
-On a **connected** machine with the **same OS + CPU architecture + Python 3.12** as the target
-(the Timefold/JPype wheels are platform- and Python-version-specific), after `./setup.sh`:
+On a **connected** machine that has run `./setup.sh` (Python 3.12 venv + Node + `uv`):
 ```bash
-./make-offline-bundle.sh
+./make-offline-bundle.sh                       # bundle for THIS machine's OS/arch
+./make-offline-bundle.sh --platform linux      # cross-build a Linux x86_64 bundle
+./make-offline-bundle.sh --platform windows    # cross-build a Windows x64 bundle
+./make-offline-bundle.sh --platform all        # native + linux + windows
 ```
-This produces `shift_manager-offline-bundle.tar.gz` (source + prebuilt `dist/` +
-`offline_wheels/` + an `INSTALL-OFFLINE.txt`). It does, equivalently, by hand:
-```bash
-backend/.venv/bin/python -m pip download -r backend/requirements.txt -d offline_wheels   # all wheels incl. Timefold JARs
-cd frontend && npm run build                                                              # prebuild dist/
-```
-Copy the `.tar.gz` to the target (plus offline installers for a **JDK 17+** and **Python 3.12**),
-extract it, and follow `INSTALL-OFFLINE.txt`:
-```bash
-cd backend
-python3.12 -m venv .venv
-.venv/bin/python -m pip install --no-index --find-links ../offline_wheels -r requirements.txt
-cd .. && cd backend && JAVA_HOME=/path/to/jdk .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-```
-No Node on the target (`dist/` is prebuilt), no database, no network. If the target's OS/arch or
-Python minor version differs from the staging machine, the wheels won't match — rebuild the
-bundle on a matching staging machine.
+Each run produces a `shift_manager-offline-bundle[-<platform>].tar.gz` at the repo root
+containing the source, a prebuilt `frontend/dist/`, `offline_wheels/` (the full pip closure,
+incl. Timefold's JARs), and a platform-specific `INSTALL-OFFLINE.txt`. (`--help` documents the
+flags.)
+
+The Timefold/JPype wheels are **platform- and Python-version-specific**, so a bundle only
+fits a target with the **same OS + CPU architecture + Python 3.12**:
+
+| Bundle | Target | How reliable |
+|--------|--------|--------------|
+| `shift_manager-offline-bundle.tar.gz` | the staging machine's own OS/arch | **fully verifiable here** (install with `--no-index` to test) |
+| `…-linux-x86_64.tar.gz` | Linux x86_64 | **tag-correct, complete closure** — same package set as the verified native one, manylinux wheels; not run-tested unless built on Linux |
+| `…-windows-amd64.tar.gz` | Windows x64 | **best-effort** — the script fixes pip's host-marker bug (drops Unix-only `uvloop`, adds Windows-only `colorama`); **not install-tested off-Windows** |
+
+> **For a guaranteed Windows (or Linux) bundle, run the script *on that OS*** (`--platform
+> native` there) — then the wheels and the `--no-index` resolution are exactly the target's.
+> Cross-building from another OS is convenient but can't be install-tested.
+
+Copy the right `.tar.gz` to the target (plus offline installers for a **JDK 17+** and
+**Python 3.12**), extract it, and follow the `INSTALL-OFFLINE.txt` inside (it has the exact,
+OS-correct commands). No Node on the target (`dist/` is prebuilt), no database, no network.
