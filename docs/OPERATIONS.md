@@ -208,3 +208,53 @@ one can serve old code — kill it first.
 
 There are no secrets, no external services, and no network calls — the app runs entirely
 on `localhost`. Backups = exported JSON files; keep them wherever you keep documents.
+
+---
+
+## 7. Offline / air-gapped (disconnected) install
+
+**At runtime the app needs no network** — no CDN, web fonts, analytics, outbound API calls, or
+runtime downloads; the UI is served from `localhost`, and the solver runs a local JVM against
+JARs bundled inside the Timefold package. Only **installation** pulls from the internet. So a
+disconnected machine needs, at run time, just three things:
+
+1. **A JDK 17+** (with `JAVA_HOME` set to it),
+2. **Python 3.12** with the backend dependencies installed (the `backend/.venv`),
+3. **A prebuilt `frontend/dist/`** (Node is *build-time only* — not needed to run).
+
+(The Brave/Chrome browser + Playwright are only for the e2e tests, never to run the app.)
+
+### Easiest: set up once while connected, then disconnect
+If the machine can reach the internet **once**, run `./setup.sh` (and `./run.sh` once to build
+`dist/`) while online. After that it runs fully offline. On the disconnected machine **don't use
+`./run.sh`** (it rebuilds `dist/`, which needs Node) — `dist/` is already built, so start the
+server directly:
+```bash
+cd backend
+JAVA_HOME=/path/to/jdk .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+# open http://127.0.0.1:8000
+```
+
+### Truly air-gapped target (never online): build a bundle on a staging machine
+On a **connected** machine with the **same OS + CPU architecture + Python 3.12** as the target
+(the Timefold/JPype wheels are platform- and Python-version-specific), after `./setup.sh`:
+```bash
+./make-offline-bundle.sh
+```
+This produces `shift_manager-offline-bundle.tar.gz` (source + prebuilt `dist/` +
+`offline_wheels/` + an `INSTALL-OFFLINE.txt`). It does, equivalently, by hand:
+```bash
+backend/.venv/bin/python -m pip download -r backend/requirements.txt -d offline_wheels   # all wheels incl. Timefold JARs
+cd frontend && npm run build                                                              # prebuild dist/
+```
+Copy the `.tar.gz` to the target (plus offline installers for a **JDK 17+** and **Python 3.12**),
+extract it, and follow `INSTALL-OFFLINE.txt`:
+```bash
+cd backend
+python3.12 -m venv .venv
+.venv/bin/python -m pip install --no-index --find-links ../offline_wheels -r requirements.txt
+cd .. && cd backend && JAVA_HOME=/path/to/jdk .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+No Node on the target (`dist/` is prebuilt), no database, no network. If the target's OS/arch or
+Python minor version differs from the staging machine, the wheels won't match — rebuild the
+bundle on a matching staging machine.

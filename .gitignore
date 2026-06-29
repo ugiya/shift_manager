@@ -21,3 +21,7 @@ test-results/
 # Session / task summaries (kept locally + mirrored to Obsidian, not tracked in the repo)
 /shift-scheduler-*.md
 /shift-scheduling-*.md
+
+# Offline-bundle outputs (produced by make-offline-bundle.sh on a staging machine)
+/offline_wheels/
+/shift_manager-offline-bundle.tar.gz
