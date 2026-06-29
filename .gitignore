@@ -17,3 +17,6 @@ frontend/tsconfig.tsbuildinfo
 .claude/
 .omx/
 test-results/
+
+# Session / task summaries (kept locally + mirrored to Obsidian, not tracked in the repo)
+/shift-scheduler-*.md
