@@ -23,5 +23,5 @@ test-results/
 /shift-scheduling-*.md
 
 # Offline-bundle outputs (produced by make-offline-bundle.sh on a staging machine)
-/offline_wheels/
-/shift_manager-offline-bundle.tar.gz
+/offline_wheels*/
+/shift_manager-offline-bundle*.tar.gz
