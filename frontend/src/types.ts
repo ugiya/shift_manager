@@ -82,11 +82,36 @@ export interface Flag {
   rule: string;
   kind: "hard" | "soft";
   weight: number;
-  title: string;
+  title: string;   // authoritative English rendering (backend)
   detail: string;
+  // Machine-readable form (2026-07-02): a stable message id + the dynamic values
+  // (names as entered, ISO dates, counts). lib/flagText.ts composes a Hebrew
+  // sentence from these; missing/unknown msg falls back to the English text.
+  msg?: string | null;
+  params?: FlagParams;
   employee_id: string | null;
   shift_id: string | null;
   seat_ids: string[];
+}
+export interface FlagShiftRef { name: string; date: string }
+export interface FlagSeatRef { kind: "manager" | "worker"; team?: string; role?: string; project?: string }
+export interface FlagParams {
+  employee?: string;
+  shift?: FlagShiftRef;
+  shift_a?: FlagShiftRef;
+  shift_b?: FlagShiftRef;
+  seat?: FlagSeatRef;
+  date?: string;
+  days?: number;
+  count?: number;
+  gap_h?: number;
+  min_h?: number;
+  rec_h?: number;
+  overlap?: boolean;
+  unavailable?: boolean;
+  team?: string;
+  spread?: number;
+  top?: string;
 }
 
 export type Assignments = Record<string, string | null>;

@@ -1,9 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
-// UI-chrome internationalisation: English (default) and Hebrew (RTL). Only the app's
-// own labels translate — user data (names) renders as entered, and flag titles/details
-// come from the backend in English (translating rule prose is a backend concern).
+// UI-chrome internationalisation: English (default) and Hebrew (RTL). The app's own
+// labels translate; user data (names) always renders as entered. Review flags compose
+// their Hebrew from the backend's machine-readable form (lib/flagText.ts) — static
+// sentence parts translate, configured names stay verbatim (decision 2026-07-02,
+// reversing the earlier "flag prose stays English" rule).
 // The language persists independently of the autosaved session and flips <html dir>.
 
 export type Lang = "en" | "he";
@@ -77,7 +79,7 @@ const en = {
   wlWeekendTitle: "Weekend shifts this week",
   wlBurdenTitle: "Cumulative burden: carried from prior weeks + this week's night/weekend seat assignments (counted per seat, matching the fairness rule)",
   wlVsTeamTitle: "This person's cumulative burden minus their team's average",
-  wlNote: "Burden = night or weekend shifts, cumulative across weeks (drives Fairness, R9).",
+  wlNote: "Shifts assigned this week per person; nights and weekend shifts are the taxing ones the fairness rule spreads evenly.",
   wlEmpty: "No employees to summarise.",
   wlCarriedTitle: "{carried} carried + {week} this week",
   // schedule views
@@ -193,6 +195,21 @@ const en = {
   thisWeekTitle: "Unticked: the project stays in the org, but none of its positions are scheduled this week",
   notThisWeek: "not this week",
   serverUnreachable: "Can't reach the scheduling server — it may be down or restarting. Nothing is lost: your session is saved on this device. Retry once the server is back.",
+  // score badge + legend (2026-07-02: plain words, no raw score numbers)
+  badgeAllGood: "All good",
+  badgeEmptyShifts: "{n} empty shifts",
+  legendTitle: "What do these mean?",
+  legendOk: "every required shift is filled and no binding rule is broken.",
+  legendEmptyTerm: "Empty shifts",
+  legendEmpty: "the schedule is legal, but some required shifts have nobody assigned — each one is listed under Review.",
+  legendBad: "a binding rule (rest, double-booking, day off) is broken — fix it before publishing.",
+  legendMore: "Full details for every item are in the Review tab.",
+  // workload advanced toggle
+  wlAdvanced: "Advanced",
+  wlAdvancedTitle: "Show the burden numbers the fairness rule balances",
+  wlAdvancedNote: "Burden = shifts carried over from previous weeks + this week's night/weekend shifts (counted per seat). \"vs team\" = this person's burden minus their team's average — the fairness rule keeps this spread small.",
+  // project picker (Project view)
+  allProjectsPick: "All",
   // language
   langToggleTitle: "שפה: עברית",
 } as const;
@@ -267,7 +284,7 @@ const he: Record<Msg, string> = {
   wlWeekendTitle: "משמרות סוף שבוע השבוע",
   wlBurdenTitle: "עומס מצטבר: מהשבועות הקודמים + שיבוצי לילה/סופ״ש השבוע (נספר לפי משבצת, בהתאמה לכלל ההוגנות)",
   wlVsTeamTitle: "העומס המצטבר של העובד פחות ממוצע הצוות",
-  wlNote: "עומס = משמרות לילה או סוף שבוע, מצטבר בין שבועות (מניע את כלל ההוגנות).",
+  wlNote: "משמרות משובצות השבוע לכל עובד; לילות וסופ״ש הן המשמרות המכבידות שכלל ההוגנות מפזר באופן שווה.",
   wlEmpty: "אין עובדים לסיכום.",
   wlCarriedTitle: "{carried} מצטבר + {week} השבוע",
   lockedDirty: "שינויי דרישות ממתינים — יש לשמור או לבטל אותם (בדרישות או בפרויקט) כדי לערוך שיבוצים כאן.",
@@ -374,6 +391,18 @@ const he: Record<Msg, string> = {
   thisWeekTitle: "ללא סימון: הפרויקט נשאר בארגון, אך אף משרה שלו לא תשובץ השבוע",
   notThisWeek: "לא השבוע",
   serverUnreachable: "אין חיבור לשרת השיבוץ — ייתכן שהוא כבוי או מופעל מחדש. שום דבר לא אבד: ההפעלה שמורה במכשיר זה. נסו שוב כשהשרת יחזור.",
+  badgeAllGood: "תקין",
+  badgeEmptyShifts: "{n} משמרות ריקות",
+  legendTitle: "מה זה אומר?",
+  legendOk: "כל המשמרות הנדרשות מאוישות ואף כלל מחייב לא הופר.",
+  legendEmptyTerm: "משמרות ריקות",
+  legendEmpty: "הלוח חוקי, אך בחלק מהמשמרות הנדרשות אין אף משובץ — כל אחת מפורטת בלשונית ביקורת.",
+  legendBad: "כלל מחייב (מנוחה, כפל שיבוץ, יום חופש) הופר — יש לתקן לפני פרסום.",
+  legendMore: "פירוט מלא של כל סעיף נמצא בלשונית ביקורת.",
+  wlAdvanced: "מתקדם",
+  wlAdvancedTitle: "הצגת מספרי העומס שכלל ההוגנות מאזן",
+  wlAdvancedNote: "עומס = משמרות שנגררו משבועות קודמים + משמרות לילה/סופ״ש השבוע (נספר לפי שיבוץ). ״מול הצוות״ = העומס של העובד פחות ממוצע הצוות — כלל ההוגנות שומר על פער קטן.",
+  allProjectsPick: "הכל",
   langToggleTitle: "Language: English",
 };
 

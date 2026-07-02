@@ -12,6 +12,8 @@ export interface SavedUi {
   view: "schedule" | "editor";
   scheduleView: "site" | "team" | "project" | "employee";
   siteId: string;
+  /** Project-view picker: a project id, "*" for all, "" = default (first project). */
+  projectId: string;
 }
 
 export interface SavedSession {
@@ -62,6 +64,7 @@ export function loadSession(): SavedSession | null {
         scheduleView: ui.scheduleView === "site" || ui.scheduleView === "team" || ui.scheduleView === "employee"
           ? ui.scheduleView : "project",
         siteId: typeof ui.siteId === "string" ? ui.siteId : "",
+        projectId: typeof ui.projectId === "string" ? ui.projectId : "",
       },
     };
   } catch {

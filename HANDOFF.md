@@ -8,7 +8,47 @@ itself is **uncommitted** on this branch.
 The data model is authoritative in `docs/DATA_MODEL.md` (+ `CONTEXT.md`, `docs/adr/`) —
 those win over any memory; re-read before acting.
 
-## ⏭️ CURRENT WORK — Round 4: week navigation + editor rework (2026-07-02, uncommitted)
+## ⏭️ CURRENT WORK — Round 5: UI clarity (2026-07-02, branch feat/ui-clarity-round5, uncommitted)
+
+> **STATUS:** implemented + verified at write time (backend **973 passed**, full e2e
+> **115 passed** pre-final-run — see session for the last run; build/typecheck clean;
+> visual pass done). Codex: main review APPROVE-WITH-NITS (3 fixed), seat-matrix delta
+> review CHANGES-NEEDED → the MEDIUM (index-alignment) fixed, LOW (shift-cell testid per
+> sub-row) accepted. Commit when the user asks; then merge to main.
+> User decisions (do NOT re-ask): workload = simple by default + "Advanced" toggle;
+> badge = amber on unfilled, DROP כיסוי/קנס, "?" legend; flags = translate STATIC text
+> only, configured names (roles/projects/people/shift types) stay as entered.
+
+- **Project picker** (`ProjectView`, `SavedUi.projectId`): one project at a time
+  ("" = first, "*" = all); persists; `project-pick`/`project-pick-all` testids.
+- **Seat-matrix grids** (user-annotated feedback): Site grid + Project view render one
+  grid SUB-ROW per seat (`gridRow: span N` headers, display:contents sub-row wrappers,
+  whole-row hover via `filter: brightness`). Site grid aligns rows by a STABLE seat key
+  (kind|project|role|ordinal) — NOT positional index (codex: disjoint-day crews would
+  chain different seats into one visual row). Dark `--grid-line` between day columns +
+  2px lane ends; light hairlines between seat rows.
+- **Role accents** (`lib/roleColors.ts`): 8-slot CVD-validated palette (validated with
+  the dataviz validator against #fff), keyed by role position, tint+edge on the seat
+  label chip; manager = brand. Identity never color-alone.
+- **Score badge** (`App.ScoreBadge`): data-state idle/ok/warn/bad; green ONLY when
+  feasible AND full; amber "{n} empty shifts"; coverage/penalty text REMOVED (data-*
+  attrs kept for e2e); "?" legend popover (`score-legend`/`score-legend-button`).
+- **Workload**: simple columns by default; `workload-advanced` toggle reveals burden +
+  vs-team + explanatory note.
+- **Hebrew flags**: analysis.py flags gained `msg` + `params` (names as entered, ISO
+  dates, counts) — English title/detail UNTOUCHED (tests pin them);
+  `frontend/src/lib/flagText.ts` composes Hebrew (bidi-isolated names via FSI/PDI,
+  "undefined/NaN" guard falls back to English). FlagsPanel renders via flagText.
+- **BUG (round-4 regression, caught in the visual pass): language toggle wiped the
+  schedule** — fatalOf's t() dependency re-ran the seed-fetch mount effect. Fixed with a
+  module-level sentinel (`__server-unreachable__`, translated at render); pinned by
+  clarity.spec "switching language never resets the working schedule".
+- New e2e: `frontend/e2e/clarity.spec.ts` (6). Docs: DATA_MODEL §7 round-5 bullets
+  (incl. the flag-localization decision reversal).
+
+---
+
+## Round 4: week navigation + editor rework (2026-07-02, committed in 3363bef)
 
 > **STATUS: DONE + verified.** Backend **973 passed** · full e2e **109 passed** · build +
 > `typecheck:e2e` clean · visual pass (Brave screenshots: fresh current week, month-change

@@ -327,6 +327,26 @@ not change the data model, the scoring levels, or the carry-over contract.
   each row's crew chunks to that project). One draft/Save bar and one issues panel span all
   tabs. Deletes follow the null-out model (§3); an unreachable backend surfaces as a
   friendly "server unreachable, session saved locally" message, not a raw fetch error.
+- **UI clarity round (2026-07-02, round 5)**: the Project view has a **picker** (one
+  project at a time, "All" restores everything; choice persists in the session UI state);
+  seats/lanes carry a **per-role accent** (CVD-validated categorical palette, fixed order
+  by role position; identity is never color-alone — the role name is always written); the
+  **score badge speaks plainly** — green only when feasible AND fully staffed, amber
+  "{n} empty shifts" when legal-but-unfilled, red when infeasible; the raw coverage/penalty
+  numbers left the badge (a "?" legend explains the states; the scoring model itself is
+  untouched, ADR-0001). The **Workload tab** defaults to shifts/nights/weekends; the burden
+  + vs-team columns hide behind an "Advanced" toggle.
+- **Seat-matrix grids (round 5)**: the Site grid and Project view render one grid
+  SUB-ROW per seat (the lane's row header spans them), instead of stacking seats inside a
+  day cell — seat #i is one continuous, hoverable band across the week (index-aligned by
+  the pre-sorted seat order). Visual grammar: dark `--grid-line` rules between day columns
+  and at lane boundaries (2px), light hairlines between seat rows.
+- **Flag localization (2026-07-02, reverses "flag prose stays English")**: every flag in
+  the payload now carries `msg` (a stable message id) + `params` (names as entered, ISO
+  dates, counts) alongside the authoritative English `title`/`detail` that tests pin.
+  `frontend/src/lib/flagText.ts` composes fully-Hebrew sentences from them; configurable
+  values — role/project/employee/shift-type names — render verbatim, dates localize.
+  An unknown `msg` falls back to the English text, so new flags can never render blank.
 
 ---
 

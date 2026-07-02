@@ -82,9 +82,12 @@ test("Project view: a project with no demand renders 'No requirements this week'
   // add a fresh project (no demand) via the editor and save it
   await page.getByTestId("nav-editor").click();
   await page.getByTestId("add-project").click();
+  const newId = await page.getByTestId("project-row").last().getAttribute("data-id");
   await page.getByTestId("editor-save").click();
   await page.getByTestId("nav-schedule").click();
   await expect(page.getByTestId("project-view")).toBeVisible();
+  // the picker shows one project at a time — select the fresh one
+  await page.locator(`[data-testid=project-pick][data-project-id="${newId}"]`).click();
   expect(await page.getByTestId("project-empty").count()).toBeGreaterThan(0);
   await expect(page.getByTestId("project-empty").first()).toContainText("No requirements");
 });

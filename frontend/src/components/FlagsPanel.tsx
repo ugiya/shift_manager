@@ -1,5 +1,6 @@
 import type { Flag, ScoreInfo } from "../types";
 import { useI18n } from "../lib/i18n";
+import { flagText } from "../lib/flagText";
 
 interface Props {
   flags: Flag[];
@@ -60,6 +61,7 @@ function FlagGroup({
   flags: Flag[];
   emptyText: string;
 }) {
+  const { lang } = useI18n();
   return (
     <div className="flaggroup" data-testid={`flaggroup-${kind}`}>
       <div className="flaggroup__head">
@@ -75,21 +77,26 @@ function FlagGroup({
         <p className="flaggroup__empty">{emptyText}</p>
       ) : (
         <ul className="flaglist">
-          {flags.map((f) => (
-            <li
-              key={f.id}
-              className={`flag flag--${kind}`}
-              data-testid="flag"
-              data-rule={f.rule}
-              data-kind={f.kind}
-            >
-              <span className="flag__rule">{f.rule}</span>
-              <div className="flag__body">
-                <p className="flag__title">{f.title}</p>
-                <p className="flag__detail">{f.detail}</p>
-              </div>
-            </li>
-          ))}
+          {flags.map((f) => {
+            // Hebrew composes from the flag's machine-readable form; configured names
+            // (roles/projects/people/shift types) stay exactly as entered.
+            const text = flagText(f, lang);
+            return (
+              <li
+                key={f.id}
+                className={`flag flag--${kind}`}
+                data-testid="flag"
+                data-rule={f.rule}
+                data-kind={f.kind}
+              >
+                <span className="flag__rule">{f.rule}</span>
+                <div className="flag__body">
+                  <p className="flag__title">{text.title}</p>
+                  <p className="flag__detail">{text.detail}</p>
+                </div>
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>

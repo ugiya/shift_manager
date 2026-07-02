@@ -5,6 +5,7 @@ import { dayHeader } from "../lib/lookups";
 import { fmtFull } from "../lib/dates";
 import { useI18n } from "../lib/i18n";
 import { runsThisWeek, setCrewCount, setDemandDays } from "../lib/req";
+import { roleAccent, roleChipStyle } from "../lib/roleColors";
 import SeatCell from "./SeatCell";
 
 // Phase 6 + Round 2 #2/#4: seat-centric view grouped by PROJECT, now EDITABLE in two ways
@@ -28,6 +29,10 @@ interface Props {
   building: boolean;
   solving: boolean;
   onChange: (seatId: string, employeeId: string | null) => void;  // assignment (immediate)
+  // Picker (2026-07-02): show ONE project at a time — with many projects the old
+  // all-at-once page needed endless scrolling. "" = first project, "*" = all.
+  selectedProject: string;
+  onSelectProject: (id: string) => void;
 }
 
 // `idx` = the demand-row index in the DRAFT. A (team, shift_type) pair may span several
@@ -35,7 +40,7 @@ interface Props {
 // the pair alone would always hit the first row.
 interface Group { idx: number; team: string; shiftType: string; days: string[]; roles: string[] }
 
-export default function ProjectView({ ds, assignments, draft, onDraftChange, onSave, onDiscard, dirty, building, solving, onChange }: Props) {
+export default function ProjectView({ ds, assignments, draft, onDraftChange, onSave, onDiscard, dirty, building, solving, onChange, selectedProject, onSelectProject }: Props) {
   const { t, lang, weekdayNames } = useI18n();
   // Seats are read-only while there are unsaved requirement edits or a rebuild is in flight
   // (the next Save rebuilds the schedule and clears assignments, so editing one now would be
@@ -83,6 +88,12 @@ export default function ProjectView({ ds, assignments, draft, onDraftChange, onS
   const draftCount = (g: Group, project: string, role: string): number =>
     draft.demand[g.idx]?.crew[project]?.[role] ?? 0;
 
+  // The picked project ("" = default to the first; "*" or a deleted id = fall back).
+  const current = selectedProject === "*"
+    ? null
+    : draft.projects.find((p) => p.id === selectedProject) ?? draft.projects[0] ?? null;
+  const visibleProjects = current ? [current] : draft.projects;
+
   return (
     <div className="project-view" data-testid="project-view">
       {dirty && (
@@ -96,7 +107,26 @@ export default function ProjectView({ ds, assignments, draft, onDraftChange, onS
         </div>
       )}
 
-      {draft.projects.map((project) => {
+      <nav className="projpick" data-testid="project-picker" aria-label="Projects">
+        {draft.projects.map((p) => {
+          const active = current ? current.id === p.id : false;
+          return (
+            <button key={p.id} type="button" className={`projpick__btn${active ? " is-active" : ""}`}
+              data-testid="project-pick" data-project-id={p.id} data-active={active}
+              onClick={() => onSelectProject(p.id)}>
+              {p.name}
+              {!runsThisWeek(p) && <span className="chips__none"> ({t("notThisWeek")})</span>}
+            </button>
+          );
+        })}
+        <button type="button" className={`projpick__btn${current ? "" : " is-active"}`}
+          data-testid="project-pick-all" data-active={!current}
+          onClick={() => onSelectProject("*")}>
+          {t("allProjectsPick")}
+        </button>
+      </nav>
+
+      {visibleProjects.map((project) => {
         const groups = groupsFor(project.id);
         const spansTeams = project.teams.length > 1;
         return (
@@ -142,10 +172,22 @@ export default function ProjectView({ ds, assignments, draft, onDraftChange, onS
                     {/* one row per role: a count stepper + the materialised seats per day */}
                     {g.roles.map((role) => {
                       const n = draftCount(g, project.id, role);
+                      // Seat-matrix layout: seat #i is one continuous ROW across the
+                      // week (sorted by id, so the index means the same seat each day).
+                      const perDay = ds.days.map((d) => {
+                        const dayName = DAY_NAMES[new Date(d + "T00:00:00").getDay()];
+                        if (!g.days.includes(dayName)) return null;
+                        return [...(seatsByLane.get(`${project.id}|${g.team}|${g.shiftType}|${role}|${d}`) ?? [])]
+                          .sort((a, b) => a.id.localeCompare(b.id));
+                      });
+                      const rows = Math.max(1, ...perDay.map((s) => s?.length ?? 0));
                       return (
                         <div key={role} style={{ display: "contents" }} data-testid="project-lane" data-role-id={role}>
-                          <div className="grid__rowhdr pgroup__rolehdr">
-                            <span className="pgroup__rolename">{roleName.get(role) ?? role}</span>
+                          <div className="grid__rowhdr pgroup__rolehdr" style={{ gridRow: `span ${rows}` }}>
+                            <span className="pgroup__rolename seat__label--role"
+                              style={roleChipStyle(roleAccent(role, ds.roles))}>
+                              {roleName.get(role) ?? role}
+                            </span>
                             <span className="stepper" data-testid="crew-stepper">
                               <button type="button" className="stepper__btn" data-testid="crew-dec"
                                 aria-label={`one fewer ${roleName.get(role) ?? role}`}
@@ -156,29 +198,39 @@ export default function ProjectView({ ds, assignments, draft, onDraftChange, onS
                                 onClick={() => onDraftChange(setCrewCount(draft, g.team, g.shiftType, project.id, role, n + 1, g.idx))}>+</button>
                             </span>
                           </div>
-                          {ds.days.map((d) => {
-                            const dayName = DAY_NAMES[new Date(d + "T00:00:00").getDay()];
-                            const weekend = dayHeader(d, ds.weekend_weekdays, weekdayNames).weekend;
-                            if (!g.days.includes(dayName)) {
-                              return <div key={d} className={`cell cell--empty${weekend ? " is-weekend" : ""}`} data-testid="project-cell">·</div>;
-                            }
-                            const seats = seatsByLane.get(`${project.id}|${g.team}|${g.shiftType}|${role}|${d}`) ?? [];
-                            return (
-                              <div key={d} className={`cell${weekend ? " is-weekend" : ""}`} data-testid="project-cell">
-                                {seats.length === 0
-                                  ? <span className="rocell__off" title={t("noSeatYet")}>—</span>
-                                  : seats.map((s) => seatsLocked
-                                      // While requirement edits are unsaved, the next Save rebuilds the schedule
-                                      // (clearing assignments), so seats are read-only until then — assign after Save.
-                                      ? <div key={s.id} className="roseat roseat--readonly" data-testid="project-seat-ro" data-seat-id={s.id}
-                                          title={t("finishReqFirst")}>
-                                          {assignments[s.id] ? (empName.get(assignments[s.id]!) ?? assignments[s.id]) : t("unfilledOpt")}
-                                        </div>
-                                      : <SeatCell key={s.id} seat={s} ds={ds} assignedId={assignments[s.id] ?? null} onChange={onChange} />
-                                    )}
-                              </div>
-                            );
-                          })}
+                          {Array.from({ length: rows }, (_, i) => (
+                            <div key={i} className={`gridrow${i === rows - 1 ? " gridrow--laneend" : ""}`}
+                              style={{ display: "contents" }}>
+                              {ds.days.map((d, di) => {
+                                const seats = perDay[di];
+                                const weekend = dayHeader(d, ds.weekend_weekdays, weekdayNames).weekend;
+                                if (seats === null) {
+                                  return (
+                                    <div key={d} className={`cell cell--empty${weekend ? " is-weekend" : ""}`} data-testid="project-cell">
+                                      {i === 0 ? "·" : ""}
+                                    </div>
+                                  );
+                                }
+                                const s = seats[i];
+                                return (
+                                  <div key={d} className={`cell cell--slim${weekend ? " is-weekend" : ""}`} data-testid="project-cell">
+                                    {!s
+                                      ? (i === 0 && seats.length === 0
+                                          ? <span className="rocell__off" title={t("noSeatYet")}>—</span>
+                                          : null)
+                                      : seatsLocked
+                                        // While requirement edits are unsaved, the next Save rebuilds the schedule
+                                        // (clearing assignments), so seats are read-only until then — assign after Save.
+                                        ? <div key={s.id} className="roseat roseat--readonly" data-testid="project-seat-ro" data-seat-id={s.id}
+                                            title={t("finishReqFirst")}>
+                                            {assignments[s.id] ? (empName.get(assignments[s.id]!) ?? assignments[s.id]) : t("unfilledOpt")}
+                                          </div>
+                                        : <SeatCell key={s.id} seat={s} ds={ds} assignedId={assignments[s.id] ?? null} onChange={onChange} />}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ))}
                         </div>
                       );
                     })}

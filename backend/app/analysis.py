@@ -49,10 +49,31 @@ def seat_label(seat: Seat, schedule_lookup: dict) -> str:
     return f"{role} · {project}"
 
 
-def _flag(rule, kind, weight, title, detail, *, employee=None, shift=None, seats=(), team=None):
+def _shift_params(shift: Shift) -> dict:
+    """The shift as localizable parts: the (as-entered) type name + the ISO date.
+    The client composes its own label per language; `shift_label` stays the
+    English rendering used in `title`/`detail`."""
+    return {"name": shift.shift_type.name, "date": shift.start_date.isoformat()}
+
+
+def _seat_params(seat: Seat, lookup: dict) -> dict:
+    if seat.kind == "manager":
+        return {"kind": "manager",
+                "team": lookup["teams"].get(seat.team_id, seat.team_id)}
+    return {"kind": "worker",
+            "role": lookup["roles"].get(seat.role_id, seat.role_id),
+            "project": lookup["projects"].get(seat.project_id, seat.project_id)}
+
+
+def _flag(rule, kind, weight, title, detail, *, employee=None, shift=None, seats=(), team=None,
+          msg=None, params=None):
     # `team` only disambiguates the id of team-scoped flags (R9), which carry no
     # employee/shift/seats — without it, two imbalanced teams would share one flag id
     # (and collide as React keys downstream). Other flags leave it None (id unchanged).
+    # `msg` + `params` (2026-07-02) are the flag's MACHINE-READABLE form: a stable
+    # message id plus the dynamic values (names as entered, ISO dates, counts), so the
+    # client can compose a localized sentence while `title`/`detail` remain the
+    # authoritative English rendering (tests pin those).
     parts = [rule, str(employee), str(shift), *sorted(s.id for s in seats)]
     if team is not None:
         parts.append(str(team))
@@ -64,6 +85,8 @@ def _flag(rule, kind, weight, title, detail, *, employee=None, shift=None, seats
         "weight": HARD_WEIGHT if kind == "hard" else weight,
         "title": title,
         "detail": detail,
+        "msg": msg,
+        "params": params or {},
         "employee_id": employee,
         "shift_id": shift,
         "seat_ids": [s.id for s in seats],
@@ -92,7 +115,11 @@ def derive_flags(schedule: Schedule, lookup: dict | None = None) -> list[dict]:
                     f"{emp_name(a.employee)} double-booked",
                     f"Assigned to two overlapping shifts: "
                     f"{shift_label(a.shift)} and {shift_label(b.shift)}. Neither seat counts as filled.",
-                    employee=a.employee.id, seats=(a, b)))
+                    employee=a.employee.id, seats=(a, b),
+                    msg="r1_double_booked",
+                    params={"employee": emp_name(a.employee),
+                            "shift_a": _shift_params(a.shift),
+                            "shift_b": _shift_params(b.shift)}))
 
     # per-employee day stats
     for emp_id, seats in by_emp.items():
@@ -104,14 +131,18 @@ def derive_flags(schedule: Schedule, lookup: dict | None = None) -> list[dict]:
                 "R2", "hard", 0,
                 f"{emp_name(emp)} has no day off",
                 f"Working all {len(days)} days this week — the legal floor of one day off is broken.",
-                employee=emp_id))
+                employee=emp_id,
+                msg="r2_no_day_off",
+                params={"employee": emp_name(emp), "days": len(days)}))
         # R8 preferred second day off (soft-mild)
         elif len(days) == DAYS_IN_WEEK - 1:
             flags.append(_flag(
                 "R8", "soft", W_SIXTH_DAY,
                 f"{emp_name(emp)} works 6 days",
                 f"Only one day off this week; the preferred second day off is not met.",
-                employee=emp_id))
+                employee=emp_id,
+                msg="r8_six_days",
+                params={"employee": emp_name(emp)}))
         # R5 at most one shift per day (soft-strong)
         per_day: dict = {}
         for s in seats:
@@ -122,7 +153,10 @@ def derive_flags(schedule: Schedule, lookup: dict | None = None) -> list[dict]:
                     "R5", "soft", W_ONE_SHIFT_PER_DAY,
                     f"{emp_name(emp)} has {len(day_seats)} shifts on {d:%a %d %b}",
                     "More than one shift on the same calendar day.",
-                    employee=emp_id, seats=tuple(day_seats)))
+                    employee=emp_id, seats=tuple(day_seats),
+                    msg="r5_multi_per_day",
+                    params={"employee": emp_name(emp), "count": len(day_seats),
+                            "date": d.isoformat()}))
 
     # R3 / R6 pairwise rest (within week)
     for emp_id, seats in by_emp.items():
@@ -140,14 +174,23 @@ def derive_flags(schedule: Schedule, lookup: dict | None = None) -> list[dict]:
                     f"{emp_name(emp)} has too little rest",
                     f"Only {_hours(gap)} between {shift_label(first.shift)} and "
                     f"{shift_label(second.shift)} (legal minimum {_hours(LEGAL_REST_MINUTES)}).",
-                    employee=emp_id, seats=(first, second)))
+                    employee=emp_id, seats=(first, second),
+                    msg="r3_short_rest",
+                    params={"employee": emp_name(emp), "gap_h": round(gap / 60, 1),
+                            "min_h": LEGAL_REST_MINUTES / 60,
+                            "shift_a": _shift_params(first.shift),
+                            "shift_b": _shift_params(second.shift)}))
             if first.shift.is_night and gap < NIGHT_REST_MINUTES:
                 flags.append(_flag(
                     "R6", "soft", W_NIGHT_RECOVERY,
                     f"{emp_name(emp)} short night recovery",
                     f"Only {_hours(gap)} after night shift {shift_label(first.shift)} "
                     f"(recommended {_hours(NIGHT_REST_MINUTES)}).",
-                    employee=emp_id, seats=(first, second)))
+                    employee=emp_id, seats=(first, second),
+                    msg="r6_night_recovery",
+                    params={"employee": emp_name(emp), "gap_h": round(gap / 60, 1),
+                            "rec_h": NIGHT_REST_MINUTES / 60,
+                            "shift": _shift_params(first.shift)}))
 
     # R3 / R6 carry-over across the week boundary. Mirrors constraints.py exactly:
     # last week's shift is paired with EACH current-week seat (per-seat, like the
@@ -167,7 +210,12 @@ def derive_flags(schedule: Schedule, lookup: dict | None = None) -> list[dict]:
                 flags.append(_flag(
                     "R3", "hard", 0,
                     f"{emp_name(emp)} too little rest from last week",
-                    detail, employee=emp_id, seats=(s,)))
+                    detail, employee=emp_id, seats=(s,),
+                    msg="r3_carry",
+                    params={"employee": emp_name(emp), "overlap": gap < 0,
+                            "gap_h": round(max(gap, 0) / 60, 1),
+                            "min_h": LEGAL_REST_MINUTES / 60,
+                            "shift": _shift_params(s.shift)}))
             if emp.prev_shift_was_night and gap < NIGHT_REST_MINUTES:
                 detail = (f"Overlaps last week's night shift — no recovery before "
                           f"{shift_label(s.shift)}." if gap < 0 else
@@ -176,7 +224,12 @@ def derive_flags(schedule: Schedule, lookup: dict | None = None) -> list[dict]:
                 flags.append(_flag(
                     "R6", "soft", W_NIGHT_RECOVERY,
                     f"{emp_name(emp)} short night recovery from last week",
-                    detail, employee=emp_id, seats=(s,)))
+                    detail, employee=emp_id, seats=(s,),
+                    msg="r6_carry",
+                    params={"employee": emp_name(emp), "overlap": gap < 0,
+                            "gap_h": round(max(gap, 0) / 60, 1),
+                            "rec_h": NIGHT_REST_MINUTES / 60,
+                            "shift": _shift_params(s.shift)}))
 
     # R7 no consecutive weekends (soft-strong)
     for emp_id, seats in by_emp.items():
@@ -187,7 +240,9 @@ def derive_flags(schedule: Schedule, lookup: dict | None = None) -> list[dict]:
                 "R7", "soft", W_CONSECUTIVE_WEEKEND,
                 f"{emp_name(emp)} works a 2nd weekend in a row",
                 f"Assigned a weekend shift ({shift_label(wk[0].shift)}) after working last weekend.",
-                employee=emp_id, seats=tuple(wk)))
+                employee=emp_id, seats=tuple(wk),
+                msg="r7_second_weekend",
+                params={"employee": emp_name(emp), "shift": _shift_params(wk[0].shift)}))
 
     # R10 respect preferences (soft-mild)
     for s in assigned:
@@ -196,7 +251,9 @@ def derive_flags(schedule: Schedule, lookup: dict | None = None) -> list[dict]:
                 "R10", "soft", W_PREFERENCE,
                 f"{emp_name(s.employee)} works an avoided shift",
                 f"{emp_name(s.employee)} preferred not to work {shift_label(s.shift)}.",
-                employee=s.employee.id, shift=s.shift.id, seats=(s,)))
+                employee=s.employee.id, shift=s.shift.id, seats=(s,),
+                msg="r10_avoided",
+                params={"employee": emp_name(s.employee), "shift": _shift_params(s.shift)}))
 
     # R11 honor preferred shift type (soft-mild): assigned a type not among the
     # employee's (non-empty) preferences. Shares Seat.is_dispreferred_type() with
@@ -208,7 +265,9 @@ def derive_flags(schedule: Schedule, lookup: dict | None = None) -> list[dict]:
                 f"{emp_name(s.employee)} works a non-preferred shift type",
                 f"{emp_name(s.employee)} was assigned {shift_label(s.shift)} "
                 f"({s.shift.shift_type.name}), which isn't among their preferred shift types.",
-                employee=s.employee.id, shift=s.shift.id, seats=(s,)))
+                employee=s.employee.id, shift=s.shift.id, seats=(s,),
+                msg="r11_nonpreferred",
+                params={"employee": emp_name(s.employee), "shift": _shift_params(s.shift)}))
 
     # Exceptional Assignment (soft, override-only). When the cause is the employee's
     # Unavailability on the shift's date, name it — that's the actionable detail.
@@ -225,7 +284,12 @@ def derive_flags(schedule: Schedule, lookup: dict | None = None) -> list[dict]:
                 "EXC", "soft", W_EXCEPTIONAL,
                 f"{emp_name(s.employee)} — exceptional assignment",
                 detail,
-                employee=s.employee.id, shift=s.shift.id, seats=(s,)))
+                employee=s.employee.id, shift=s.shift.id, seats=(s,),
+                msg="exc_signoff",
+                params={"employee": emp_name(s.employee),
+                        "unavailable": s.shift.start_date in s.employee.unavailable_dates,
+                        "date": s.shift.start_date.isoformat(),
+                        "seat": _seat_params(s, lookup)}))
 
     # R4 exact demand — understaffing (soft)
     for s in schedule.seats:
@@ -235,7 +299,9 @@ def derive_flags(schedule: Schedule, lookup: dict | None = None) -> list[dict]:
                 f"Unfilled: {seat_label(s, lookup)}",
                 f"No eligible employee available for {seat_label(s, lookup)} on "
                 f"{shift_label(s.shift)}.",
-                shift=s.shift.id, seats=(s,)))
+                shift=s.shift.id, seats=(s,),
+                msg="r4_unfilled",
+                params={"seat": _seat_params(s, lookup), "shift": _shift_params(s.shift)}))
 
     # R9 fairness — surface only when the burden spread is notable (soft objective)
     flags.extend(_fairness_flags(schedule, by_emp, lookup))
@@ -269,7 +335,10 @@ def _fairness_flags(schedule: Schedule, by_emp: dict, lookup: dict) -> list[dict
                 f"Burden shifts (night/weekend) are uneven across {team}: "
                 f"spread of {spread} between the most- and least-loaded member "
                 f"(most loaded: {lookup['employees'].get(top[0].id, top[0].id)}).",
-                employee=None, team=team_id))
+                employee=None, team=team_id,
+                msg="r9_imbalance",
+                params={"team": team, "spread": spread,
+                        "top": lookup["employees"].get(top[0].id, top[0].id)}))
     return out
 
 

@@ -34,6 +34,12 @@ function emptyAssignments(ds: Dataset | null): Assignments {
   return a;
 }
 
+// An unreachable backend (api.ts wraps ONLY fetch-level rejections in this error) reads
+// like a code bug as a raw "TypeError: Failed to fetch" — store a sentinel instead and
+// let the render translate it (also keeps callbacks that catch errors dependency-free).
+const UNREACHABLE = "__server-unreachable__";
+const fatalOf = (e: unknown) => (e instanceof ServerUnreachableError ? UNREACHABLE : String(e));
+
 export default function App() {
   const { lang, setLang, t } = useI18n();
   // Autosave restore (synchronous, once): a saved session — committed doc, unsaved draft,
@@ -57,6 +63,9 @@ export default function App() {
   const [validating, setValidating] = useState(false);
   const [building, setBuilding] = useState(false);  // a committed-doc rebuild is in flight
   const [siteId, setSiteId] = useState<string>(restored?.ui.siteId ?? "");
+  // Project-view picker (2026-07-02): one project at a time instead of one long scroll.
+  // "" = default (first project); "*" = the old show-everything mode.
+  const [projectId, setProjectId] = useState<string>(restored?.ui.projectId ?? "");
   const [fatal, setFatal] = useState<string | null>(null);
   // Ask-on-load (locked decision, 2026-07-02): a RESTORED session whose week is strictly
   // before today's week gets a one-shot choice — stay on the saved week, or start the
@@ -83,20 +92,17 @@ export default function App() {
   const restoreAssignments = useRef<Assignments | null>(restored?.assignments ?? null);
   const restoreDraft = useRef<RequirementsDoc | null>(restored?.draft ?? null);
 
-  // An unreachable backend (api.ts wraps ONLY fetch-level rejections in this error) —
-  // a raw "TypeError: Failed to fetch" reads like a code bug, so translate it into what
-  // the user can act on (start/wait for the server; the autosaved session means no loss).
-  // Any other error keeps its real message.
-  const fatalOf = useCallback(
-    (e: unknown) => (e instanceof ServerUnreachableError ? t("serverUnreachable") : String(e)),
-    [t]);
-
   // load the seed requirements (re-runnable so the initial-load fatal screen can retry).
   // Skipped when a saved session was restored — the session IS the document of record.
+  // MUST keep a stable identity ([] deps): the mount effect below re-runs when it
+  // changes, and a re-run re-fetches the seed and CLOBBERS the working document —
+  // exactly what happened when fatalOf depended on t() and a language toggle rebuilt
+  // this chain (caught in the round-5 visual pass). fatalOf is dependency-free: it
+  // stores a sentinel, and the render translates it in the current language.
   const loadRequirements = useCallback(() => {
     setFatal(null);
     getRequirements().then(setReq).catch((e) => setFatal(fatalOf(e)));
-  }, [fatalOf]);
+  }, []);
   useEffect(() => {
     if (!restored) loadRequirements();
   }, [loadRequirements, restored]);
@@ -425,11 +431,11 @@ export default function App() {
         draft: dirty && draft ? draft : null,
         assignments,
         carryover,
-        ui: { view, scheduleView, siteId },
+        ui: { view, scheduleView, siteId, projectId },
       });
     }, 300);
     return () => clearTimeout(h);
-  }, [req, draft, dirty, assignments, carryover, view, scheduleView, siteId]);
+  }, [req, draft, dirty, assignments, carryover, view, scheduleView, siteId, projectId]);
 
   // "Reset to seed": drop the saved session AND the working document, and start over
   // from the server's seed requirements — the escape hatch out of any restored state.
@@ -450,11 +456,13 @@ export default function App() {
 
   const issues = useMemo(() => (dataset ? siteIssues(dataset, assignments) : {}), [dataset, assignments]);
 
+  const fatalText = fatal === UNREACHABLE ? t("serverUnreachable") : fatal;
+
   if (fatal && !req) return (
     <div className="fatal" role="alert" data-testid="fatal-screen">
       <div className="fatal__box">
         <strong>{t("failedLoad")}</strong>
-        <p className="fatal__msg">{fatal}</p>
+        <p className="fatal__msg">{fatalText}</p>
         <div className="fatal__actions">
           <button className="btn btn--primary" data-testid="fatal-retry" onClick={loadRequirements}>{t("tryAgain")}</button>
           <button className="btn" data-testid="fatal-reload" onClick={() => window.location.reload()}>{t("reloadPage")}</button>
@@ -558,7 +566,7 @@ export default function App() {
 
       {fatal && (
         <div className="banner banner--error" data-testid="fatal-banner" role="alert">
-          {t("fatalPrefix")} {fatal}
+          {t("fatalPrefix")} {fatalText}
           <button className="banner__dismiss" data-testid="fatal-dismiss"
             onClick={() => setFatal(null)}>{t("dismiss")}</button>
         </div>
@@ -641,7 +649,8 @@ export default function App() {
                 {dataset && scheduleView === "project" &&
                   <ProjectView ds={dataset} assignments={assignments}
                     draft={draft ?? req} onDraftChange={setDraft} onSave={handleSave}
-                    onDiscard={handleDiscard} dirty={dirty} building={building} solving={solving} onChange={handleChange} />}
+                    onDiscard={handleDiscard} dirty={dirty} building={building} solving={solving} onChange={handleChange}
+                    selectedProject={projectId} onSelectProject={setProjectId} />}
               </div>
             </ErrorBoundary>
             <SidePanel flags={flags} score={score} validating={validating}
@@ -655,22 +664,43 @@ export default function App() {
   );
 }
 
+// The badge speaks the scheduler's language (2026-07-02): green ONLY when everything is
+// filled AND legal; amber when the schedule is legal but shifts are empty; red on a
+// broken binding rule. The raw coverage/penalty numbers are gone — the Review tab has
+// the details, and the "?" legend explains each state. Display only: the solver's
+// best-effort scoring (ADR-0001) is untouched.
 function ScoreBadge({ score, filled, total }: { score: ScoreInfo | null; filled: number; total: number }) {
   const { t } = useI18n();
-  if (!score) {
-    return <span className="badge badge--idle" data-testid="score-badge" data-feasible="unknown">{t("notSolved")}</span>;
-  }
+  const [legend, setLegend] = useState(false);
+  const unfilled = total - filled;
+  const state = !score ? "idle" : !score.feasible ? "bad" : unfilled > 0 ? "warn" : "ok";
+  const cls = { idle: "badge--idle", ok: "badge--ok", warn: "badge--warn", bad: "badge--bad" }[state];
   return (
-    <span className={`badge ${score.feasible ? "badge--ok" : "badge--bad"}`}
-      data-testid="score-badge" data-feasible={score.feasible} data-filled={filled} data-total={total}
-      data-medium={score.medium_score} data-soft={score.soft_score}>
-      <span className="badge__dot" aria-hidden />
-      {score.feasible ? t("feasible") : t("infeasible")}
-      <span className="badge__sep">·</span>{filled}/{total} {t("filled")}
-      {score.medium_score < 0 && (
-        <><span className="badge__sep">·</span>{t("coverage")} −{Math.abs(score.medium_score)}</>
+    <div className="scorewrap">
+      <span className={`badge ${cls}`} data-testid="score-badge" data-state={state}
+        data-feasible={score ? String(score.feasible) : "unknown"}
+        data-filled={filled} data-total={total}
+        data-medium={score?.medium_score} data-soft={score?.soft_score}>
+        {state === "idle" ? t("notSolved") : (
+          <>
+            <span className="badge__dot" aria-hidden />
+            {state === "bad" ? t("infeasible")
+              : state === "warn" ? t("badgeEmptyShifts", { n: unfilled })
+              : t("badgeAllGood")}
+            <span className="badge__sep">·</span>{filled}/{total} {t("filled")}
+          </>
+        )}
+      </span>
+      <button className="btn btn--sm btn--icon scorewrap__help" data-testid="score-legend-button"
+        onClick={() => setLegend((v) => !v)} title={t("legendTitle")} aria-expanded={legend}>?</button>
+      {legend && (
+        <div className="legend" data-testid="score-legend" role="note">
+          <p><strong>{t("badgeAllGood")}</strong> — {t("legendOk")}</p>
+          <p><strong>{t("legendEmptyTerm")}</strong> — {t("legendEmpty")}</p>
+          <p><strong>{t("infeasible")}</strong> — {t("legendBad")}</p>
+          <p>{t("legendMore")}</p>
+        </div>
       )}
-      <span className="badge__sep">·</span>{t("penalty")} {Math.abs(score.soft_score)}
-    </span>
+    </div>
   );
 }
