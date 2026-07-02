@@ -70,6 +70,8 @@ def _set_demand_bad_day(d): d["demand"][0]["days"] = ["Funday"]
 def _set_crew_bad_project(d): d["demand"][0]["crew"] = {"ghost": {"dev": 1}}
 def _set_crew_bad_role(d): d["demand"][0]["crew"] = {"p": {"ghost": 1}}
 def _set_crew_zero(d): d["demand"][0]["crew"] = {"p": {"dev": 0}}
+# overlaps the base row's Sun -> that concrete shift would have two defining rows
+def _dup_demand(d): d["demand"].append({"team": "t", "shift_type": "m", "days": ["Sun", "Mon"], "crew": {"p": {"dev": 1}}})
 def _dup_site(d): d["sites"].append({"id": "s", "name": "dup"})
 def _no_sites(d): d["sites"] = []
 def _no_teams(d): d["teams"] = []
@@ -101,6 +103,7 @@ ERROR_CASES = [
     (_set_crew_bad_project, "unknown project"),
     (_set_crew_bad_role, "unknown role"),
     (_set_crew_zero, "≥ 1"),
+    (_dup_demand, "duplicates team"),
     (_dup_site, "Duplicate site"),
     (_no_sites, "At least one site"),
     (_no_teams, "At least one team"),
@@ -118,6 +121,71 @@ ERROR_CASES = [
 def test_validation_catches_error(mutate, needle):
     errors, _warnings = _validate(_mut(mutate))
     assert any(needle in e for e in errors), f"expected an error containing {needle!r}; got {errors}"
+
+
+# --- demand rows sharing (team, shift_type) -----------------------------------
+
+def test_same_pair_disjoint_days_is_valid_and_builds_both_shifts():
+    """Two rows sharing (team, shift_type) with DISJOINT days are legal — crew
+    composition can vary by day (CONTEXT.md) — and each builds its own shift with
+    its own crew; only an overlapping day is rejected (see _dup_demand above)."""
+    d = copy.deepcopy(BASE)
+    d["demand"].append({"team": "t", "shift_type": "m", "days": ["Mon"],
+                        "crew": {"p": {"dev": 2}}})
+    errors, _warnings = _validate(d)
+    assert errors == []
+    sched = build_schedule(to_dataset(RequirementsIn(**d)))
+    assert len(sched.shifts) == 2                              # Sun + Mon, distinct shifts
+    by_shift: dict = {}
+    for seat in sched.seats:
+        by_shift.setdefault(seat.shift.id, []).append(seat)
+    sun = by_shift["shift-t-m-2026-06-21"]                     # week starts Sunday
+    mon = by_shift["shift-t-m-2026-06-22"]
+    assert sum(1 for s in sun if s.kind == "worker") == 1      # first row's crew
+    assert sum(1 for s in mon if s.kind == "worker") == 2      # second row's crew
+    assert sum(1 for s in sun if s.kind == "manager") == 1
+    assert sum(1 for s in mon if s.kind == "manager") == 1
+
+
+def test_dup_demand_error_names_the_overlapping_day():
+    errors, _ = _validate(_mut(_dup_demand))
+    assert any("on Sun" in e for e in errors), errors
+
+
+# --- composite-id collisions (ids concatenate their parts with '-') -----------
+
+def test_demand_pairs_with_colliding_shift_id_are_rejected():
+    """Teams 't'+'t-a' with shift types 'a-b'+'b': the two (team, shift_type) pairs both
+    mint 'shift-t-a-b-{date}', so the second row would silently reuse the first row's
+    Shift (dropping its manager seat, colliding seat ids). Blocked with both named."""
+    d = copy.deepcopy(BASE)
+    d["teams"].append({"id": "t-a", "name": "TA", "site": "s"})
+    d["shift_types"] += [
+        {"id": "a-b", "name": "AB", "start": 9, "end": 17, "is_night": False},
+        {"id": "b", "name": "B", "start": 10, "end": 18, "is_night": False},
+    ]
+    d["projects"][0]["teams"] = ["t", "t-a"]
+    d["demand"] = [
+        {"team": "t", "shift_type": "a-b", "days": ["Sun"], "crew": {"p": {"dev": 1}}},
+        {"team": "t-a", "shift_type": "b", "days": ["Sun"], "crew": {"p": {"dev": 1}}},
+    ]
+    errors, _ = _validate(d)
+    offender = [e for e in errors if "same shift id" in e]
+    assert offender and "'t-a'" in offender[0] and "'a-b'" in offender[0], errors
+
+
+def test_crew_entries_with_colliding_seat_id_are_rejected():
+    """Within one row, crew entries ('p', 'a-r') and ('p-a', 'r') both mint seat ids
+    ending '…-p-a-r-{n}' — duplicate Seat PlanningIds crash Timefold. Blocked."""
+    d = copy.deepcopy(BASE)
+    d["projects"].append({"id": "p-a", "name": "PA", "teams": ["t"]})
+    d["roles"] += [{"id": "a-r", "name": "AR"}, {"id": "r", "name": "R"}]
+    d["employees"][0]["roles"] = ["dev", "a-r", "r"]
+    d["employees"][0]["projects"] = ["p", "p-a"]
+    d["demand"][0]["crew"] = {"p": {"a-r": 1}, "p-a": {"r": 1}}
+    errors, _ = _validate(d)
+    offender = [e for e in errors if "same seat id" in e]
+    assert offender and "'p-a'" in offender[0] and "'a-r'" in offender[0], errors
 
 
 # --- warning cases (do not block) --------------------------------------------

@@ -1,14 +1,16 @@
 import { useRef, useState } from "react";
 import { exportDoc, importDoc, type ImportMode } from "../api";
 import type { RequirementsDoc } from "../types";
+import { useI18n, type MsgKey } from "../lib/i18n";
 
 // Phase 5: import / export toolbar. JSON is lossless (whole document); CSV is a lossy
 // employee roster (references by name, carry-over dropped) — labelled as such in the UI.
-const MODES: { value: ImportMode; label: string }[] = [
-  { value: "replace", label: "Replace all" },
-  { value: "upsert_by_id", label: "Merge by id" },
-  { value: "upsert_by_name", label: "Merge by name" },
-  { value: "replace_autocreate_refs", label: "Replace + create missing refs" },
+// Values are stable API modes; labels translate at render time.
+const MODES: { value: ImportMode; labelKey: MsgKey }[] = [
+  { value: "replace", labelKey: "modeReplace" },
+  { value: "upsert_by_id", labelKey: "modeMergeId" },
+  { value: "upsert_by_name", labelKey: "modeMergeName" },
+  { value: "replace_autocreate_refs", labelKey: "modeReplaceRefs" },
 ];
 
 function download(filename: string, content: string, type: string) {
@@ -23,6 +25,7 @@ function download(filename: string, content: string, type: string) {
 export default function ImportExport({ req, onChange }: {
   req: RequirementsDoc; onChange: (r: RequirementsDoc) => void;
 }) {
+  const { t } = useI18n();
   const [mode, setMode] = useState<ImportMode>("replace");
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -53,16 +56,17 @@ export default function ImportExport({ req, onChange }: {
       const r = await importDoc(req, format, mode, content);
       if (!r.requirements) {
         // Parse error — nothing adopted, the document is unchanged.
-        setMsg(`Import failed: ${r.errors.join("; ") || "unknown error"}`);
+        setMsg(t("importFailed", { msg: r.errors.join("; ") || t("unknownError") }));
       } else {
         // The merged document is adopted even with validation errors so the user can fix
         // them in the editor — but say so plainly rather than reporting plain success.
         onChange(r.requirements);
         if (r.errors.length) {
-          setMsg(`Imported ${format.toUpperCase()} with ${r.errors.length} error(s) — open Requirements to fix.`);
+          setMsg(t("importedWithErrors", { format: format.toUpperCase(), n: r.errors.length }));
         } else {
-          const warn = r.warnings.length ? ` · ${r.warnings.length} warning(s)` : "";
-          setMsg(`Imported ${format.toUpperCase()}${warn}.`);
+          setMsg(r.warnings.length
+            ? t("importedOkWarn", { format: format.toUpperCase(), n: r.warnings.length })
+            : t("importedOk", { format: format.toUpperCase() }));
         }
       }
     } catch (e) {
@@ -75,22 +79,22 @@ export default function ImportExport({ req, onChange }: {
 
   return (
     <div className="iobar" data-testid="io-bar">
-      <span className="iobar__label">Import / export:</span>
+      <span className="iobar__label">{t("ioLabel")}</span>
       <button className="btn btn--sm" data-testid="export-json" disabled={busy}
-        onClick={() => doExport("json")}>Export JSON</button>
+        onClick={() => doExport("json")}>{t("exportJson")}</button>
       <button className="btn btn--sm" data-testid="export-csv" disabled={busy}
-        onClick={() => doExport("csv")} title="Employee roster only — carry-over is not exported">
-        Export CSV <span className="iobar__lossy">(lossy roster)</span>
+        onClick={() => doExport("csv")} title={t("exportCsvTitle")}>
+        {t("exportCsv")} <span className="iobar__lossy">{t("lossyRoster")}</span>
       </button>
       <span className="iobar__sep" aria-hidden />
-      <label className="iobar__mode">mode
+      <label className="iobar__mode">{t("ioMode")}
         <select className="in" data-testid="import-mode" value={mode}
           onChange={(e) => setMode(e.target.value as ImportMode)}>
-          {MODES.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+          {MODES.map((m) => <option key={m.value} value={m.value}>{t(m.labelKey)}</option>)}
         </select>
       </label>
       <label className={`btn btn--sm${busy ? " is-disabled" : ""}`} data-testid="import-label">
-        Import file…
+        {t("importFile")}
         <input ref={fileRef} type="file" accept=".json,.csv" data-testid="import-file"
           hidden disabled={busy} onChange={onFile} />
       </label>

@@ -50,6 +50,18 @@ _CSV_LOSSY_DEFAULTS = {
     "prev_shift_end": None, "prev_shift_was_night": False,
 }
 
+# Defaults for CSV-carried columns that a *partial* file omits. Imported rows include only
+# the fields whose column is actually in the header (the CSV only patches what it carries),
+# so a NEW employee built from a partial file needs the rest filled in: EmployeeIn requires
+# `team`, and an empty team surfaces as a normal "unknown team ''" validation error instead
+# of a crash. Matched upsert rows never use these — an absent column leaves the existing
+# value untouched.
+_CSV_NEW_ROW_DEFAULTS = {
+    "team": "", "roles": [], "projects": [], "can_manage": False, "status": "active",
+    "employee_number": None, "email": None, "phone": None, "hire_date": None, "notes": None,
+    "preferred_shift_type_ids": [], "unavailable_dates": [],
+}
+
 
 # --- export ------------------------------------------------------------------
 
@@ -177,6 +189,12 @@ def _import_csv(base: RequirementsIn, content: str, mode: ImportMode) -> tuple[d
     proj_by_id = {p["id"]: p for p in projects}
     autocreated_proj_ids: set[str] = set()
     used_ids = {x["id"] for x in teams + roles + projects + shift_types}
+    # In merge modes the existing employees survive, so an auto-generated (blank-id) row
+    # must not slug to an id already in use — otherwise a new hire whose name collides with
+    # an unrelated existing employee would silently overwrite that record. REPLACE modes
+    # discard the existing employees, so their ids stay reusable (keeps import idempotent).
+    if mode not in (ImportMode.REPLACE, ImportMode.REPLACE_AUTOCREATE):
+        used_ids |= {e.id for e in base.employees}
 
     def resolve(name, kind, id_map, dups, register):
         if name in dups:
@@ -230,13 +248,26 @@ def _import_csv(base: RequirementsIn, content: str, mode: ImportMode) -> tuple[d
             proj_by_id[pid]["teams"].append(row_team_id)
         return pid
 
+    # A legally-exported field (an unbounded `notes`, say) can exceed csv's default
+    # 128 KiB per-field limit; the import's own byte cap is the real bound. And any
+    # csv.Error is a normal parse error in the response contract — never a 500.
+    csv.field_size_limit(MAX_IMPORT_BYTES)
     reader = csv.DictReader(io.StringIO(content))
-    if reader.fieldnames is None or "id" not in reader.fieldnames or "name" not in reader.fieldnames:
+    try:
+        fieldnames = reader.fieldnames
+    except csv.Error as exc:
+        return base.model_dump(), [f"Invalid CSV: {exc}"], warnings
+    if fieldnames is None or "id" not in fieldnames or "name" not in fieldnames:
         return base.model_dump(), ["CSV must have a header row with at least 'id' and 'name' columns."], warnings
+    cols = set(fieldnames)
 
     imported: list[dict] = []                           # CSV-carried fields only (no lossy defaults)
     seen_ids: set[str] = set()
-    for n, row in enumerate(reader, start=2):           # row 1 is the header
+    try:
+        rows = list(enumerate(reader, start=2))         # row 1 is the header
+    except csv.Error as exc:
+        return base.model_dump(), [f"Invalid CSV: {exc}"], warnings
+    for n, row in rows:
         eid = (row.get("id") or "").strip()
         ename = (row.get("name") or "").strip()
         if not ename:
@@ -255,19 +286,28 @@ def _import_csv(base: RequirementsIn, content: str, mode: ImportMode) -> tuple[d
         pids = [resolve_project(x, team) for x in _split(row.get("projects"))]
         stids = [resolve(x, "shift type", st_id, st_dups, reg_shift_type)
                  for x in _split(row.get("preferred_shift_types"))]
-        imported.append({
-            "id": eid, "name": ename, "team": team or "",
-            "roles": [r for r in rids if r], "projects": [p for p in pids if p],
-            "can_manage": _truthy(row.get("can_manage")),
-            "status": (row.get("status") or "active").strip() or "active",
-            "employee_number": (row.get("employee_number") or "").strip() or None,
-            "email": (row.get("email") or "").strip() or None,
-            "phone": (row.get("phone") or "").strip() or None,
-            "hire_date": (row.get("hire_date") or "").strip() or None,
-            "notes": (row.get("notes") or "").strip() or None,
-            "preferred_shift_type_ids": [s for s in stids if s],
-            "unavailable_dates": _split(row.get("unavailable_dates")),
-        })
+        # Include ONLY the fields whose column the file actually carries (DATA_MODEL §7:
+        # "the CSV only patches the fields it carries") — a column absent from the header
+        # must not reset a matched employee's value to a default on upsert.
+        rec: dict = {"id": eid, "name": ename}
+        if "team" in cols:
+            rec["team"] = team or ""
+        if "roles" in cols:
+            rec["roles"] = [r for r in rids if r]
+        if "projects" in cols:
+            rec["projects"] = [p for p in pids if p]
+        if "can_manage" in cols:
+            rec["can_manage"] = _truthy(row.get("can_manage"))
+        if "status" in cols:
+            rec["status"] = (row.get("status") or "active").strip() or "active"
+        for col in ("employee_number", "email", "phone", "hire_date", "notes"):
+            if col in cols:
+                rec[col] = (row.get(col) or "").strip() or None
+        if "preferred_shift_types" in cols:
+            rec["preferred_shift_type_ids"] = [s for s in stids if s]
+        if "unavailable_dates" in cols:
+            rec["unavailable_dates"] = _split(row.get("unavailable_dates"))
+        imported.append(rec)
 
     merged_employees = _merge_employees([e.model_dump() for e in base.employees], imported, mode, errors)
     doc = base.model_dump()
@@ -278,14 +318,17 @@ def _import_csv(base: RequirementsIn, content: str, mode: ImportMode) -> tuple[d
 
 def _merge_employees(existing: list[dict], imported: list[dict], mode: ImportMode,
                      errors: list[str]) -> list[dict]:
-    """Merge CSV-carried employee fields into `existing` per mode. CSV is lossy, so:
-      * replace / new rows  → fields the CSV doesn't carry take `_CSV_LOSSY_DEFAULTS`;
-      * upsert match        → those omitted fields (carry-over + avoid_shift_ids) are
-        PRESERVED from the existing record, and the existing id is kept (name-upsert never
-        rewrites identity). Duplicate upsert keys in base or file are rejected.
+    """Merge CSV-carried employee fields into `existing` per mode. Each imported row holds
+    only the fields whose column the file carries, so:
+      * replace / new rows  → fields the file doesn't carry take `_CSV_LOSSY_DEFAULTS` +
+        `_CSV_NEW_ROW_DEFAULTS` (a complete, validatable record);
+      * upsert match        → every omitted field (carry-over, avoid_shift_ids, and any
+        column absent from a partial file) is PRESERVED from the existing record, and the
+        existing id is kept (name-upsert never rewrites identity). Duplicate upsert keys
+        in base or file are rejected.
     """
     if mode in (ImportMode.REPLACE, ImportMode.REPLACE_AUTOCREATE):
-        return [{**_CSV_LOSSY_DEFAULTS, **csv} for csv in imported]
+        return [{**_CSV_LOSSY_DEFAULTS, **_CSV_NEW_ROW_DEFAULTS, **csv} for csv in imported]
 
     key = "id" if mode is ImportMode.UPSERT_ID else "name"
     by_key: dict[str, int] = {}
@@ -303,19 +346,9 @@ def _merge_employees(existing: list[dict], imported: list[dict], mode: ImportMod
             continue
         seen_keys.add(k)
         idx = by_key.get(k)
-        if idx is None:                                  # new employee — lossy fields default
+        if idx is None:                                  # new employee — omitted fields default
             by_key[k] = len(out)
-            out.append({**_CSV_LOSSY_DEFAULTS, **csv})
+            out.append({**_CSV_LOSSY_DEFAULTS, **_CSV_NEW_ROW_DEFAULTS, **csv})
         else:                                            # update in place — keep id + omitted fields
             out[idx] = {**out[idx], **csv, "id": out[idx]["id"]}
-    return out
-    by_key = {e[key]: i for i, e in enumerate(existing)}
-    out = list(existing)
-    for emp in imported:
-        idx = by_key.get(emp[key])
-        if idx is None:
-            by_key[emp[key]] = len(out)
-            out.append(emp)
-        else:
-            out[idx] = emp
     return out

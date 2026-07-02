@@ -20,7 +20,9 @@ DEFAULT_SPENT_SECONDS = 8
 DEFAULT_UNIMPROVED_SECONDS = 2
 
 
-@lru_cache(maxsize=1)
+# Keyed by (spent, unimproved): maxsize=1 would rebuild the (expensive) factory on
+# every call when a client alternates solve durations, so keep a small handful.
+@lru_cache(maxsize=8)
 def _solver_factory(spent: int = DEFAULT_SPENT_SECONDS,
                     unimproved: int = DEFAULT_UNIMPROVED_SECONDS) -> SolverFactory:
     config = SolverConfig(

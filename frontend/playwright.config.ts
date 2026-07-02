@@ -12,6 +12,8 @@ const BRAVE_PATH =
 
 export default defineConfig({
   testDir: "./e2e",
+  // Fails fast if a stale (unpinned/old-code) uvicorn on :8000 would be reused.
+  globalSetup: "./e2e/global-setup.ts",
   timeout: 60_000,
   expect: { timeout: 20_000 },
   fullyParallel: false,
@@ -33,7 +35,10 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: `cd ../backend && JAVA_HOME=${JAVA_HOME} .venv/bin/python -m uvicorn app.main:app --port 8000 --host 127.0.0.1`,
+    // SEED_WEEK_START pins the fresh-start week: specs hardcode seat ids that embed
+    // the seed week's dates (e.g. ...-2026-06-21-...). Tests that exercise "today"
+    // logic fake the browser clock to match (page.clock.setFixedTime).
+    command: `cd ../backend && JAVA_HOME=${JAVA_HOME} SEED_WEEK_START=2026-06-21 .venv/bin/python -m uvicorn app.main:app --port 8000 --host 127.0.0.1`,
     url: "http://127.0.0.1:8000/api/health",
     reuseExistingServer: true,
     timeout: 60_000,

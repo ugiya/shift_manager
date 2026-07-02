@@ -1,5 +1,18 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 
+// Crash-path i18n: the boundary must not depend on React context (the provider itself
+// may be inside the crashed subtree), so it reads the persisted language directly.
+// Keep these three strings in sync with lib/i18n.tsx's register.
+function boundaryText() {
+  let he = false;
+  try {
+    he = localStorage.getItem("shift-scheduler:lang") === "he";
+  } catch { /* storage unavailable → English */ }
+  return he
+    ? { title: "משהו השתבש בעת הצגת התצוגה הזו.", retry: "ניסיון חוזר", reload: "רענון הדף" }
+    : { title: "Something went wrong rendering this view.", retry: "Try again", reload: "Reload page" };
+}
+
 // A render crash anywhere below this boundary used to blank the whole page (React
 // unmounts the tree when an error escapes render), forcing a full page refresh to
 // recover. This catches it and shows a recoverable fallback instead — "Try again"
@@ -35,16 +48,17 @@ export default class ErrorBoundary extends Component<Props, State> {
 
   render() {
     if (this.state.error) {
+      const txt = boundaryText();
       return (
         <div className="fatal" role="alert" data-testid="error-boundary">
           <div className="fatal__box">
-            <strong>Something went wrong rendering this view.</strong>
+            <strong>{txt.title}</strong>
             <p className="fatal__msg">{this.state.error.message}</p>
             <div className="fatal__actions">
               <button className="btn btn--primary" data-testid="error-retry"
-                onClick={() => this.setState({ error: null })}>Try again</button>
+                onClick={() => this.setState({ error: null })}>{txt.retry}</button>
               <button className="btn" data-testid="error-reload"
-                onClick={() => window.location.reload()}>Reload page</button>
+                onClick={() => window.location.reload()}>{txt.reload}</button>
             </div>
           </div>
         </div>

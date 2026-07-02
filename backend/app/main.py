@@ -7,7 +7,9 @@ and builds / solves / re-validates — staying stateless so it's deterministic a
 """
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
+from datetime import date, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -19,7 +21,7 @@ from pydantic import BaseModel
 from .analysis import derive_flags
 from .carryover import carryover_seed, empty_carryover_seed
 from .config import ALLOWED_ORIGINS, MAX_REQUEST_BYTES, MAX_SOLVE_SECONDS
-from .data import build_lookup, build_schedule, default_dataset
+from .data import IdCollisionError, build_lookup, build_schedule, default_dataset
 from .portability import ImportMode, export, import_document
 from .requirements import (CarryoverSeedIn, RequirementsIn, apply_carryover_seed,
                            dataset_to_requirements, to_dataset, validate_requirements)
@@ -45,6 +47,13 @@ app.add_middleware(
 async def limit_body_size(request: Request, call_next):
     """Reject oversized bodies before they are read/parsed."""
     cl = request.headers.get("content-length")
+    if request.method == "POST" and cl is None:
+        # A chunked POST carries no Content-Length and would bypass the size check
+        # below with unbounded buffering. Browsers / fetch / httpx always send the
+        # header, so requiring it costs nothing.
+        return JSONResponse(status_code=411,
+                            content={"detail": "Length Required: POST requests must "
+                                               "declare Content-Length."})
     if cl is not None and cl.isdigit() and int(cl) > MAX_REQUEST_BYTES:
         return JSONResponse(status_code=413, content={"detail": "Request body too large."})
     return await call_next(request)
@@ -83,7 +92,13 @@ def _materialize(req: RequirementsIn, seed: CarryoverSeedIn | None = None):
     if errors:
         return None, errors, warnings
     ds = to_dataset(req)
-    return (ds, build_schedule(ds), build_lookup(ds)), errors, warnings
+    try:
+        schedule = build_schedule(ds)
+    except IdCollisionError as exc:
+        # An id-concatenation collision validation's concat checks couldn't foresee
+        # (dash-ambiguous user ids) — a document problem, so a normal error, not a 500.
+        return None, [str(exc)], warnings
+    return (ds, schedule, build_lookup(ds)), errors, warnings
 
 
 @app.get("/api/health")
@@ -91,10 +106,43 @@ def health() -> dict:
     return {"status": "ok"}
 
 
+def current_week_start(today: date | None = None) -> date:
+    """The Sunday on or before ``today`` — the week a fresh session schedules.
+
+    Sunday-start matches the seed convention (data.WEEK_START is a Sunday) and the
+    Fri/Sat weekend config. Local-naive on purpose (DATA_MODEL §6): the scheduler
+    lives in the org's own wall-clock. ``SEED_WEEK_START`` pins the answer for
+    deterministic tests — e2e seat ids embed the week's dates.
+    """
+    if today is None:
+        pinned = os.environ.get("SEED_WEEK_START")
+        if pinned:
+            try:
+                pin = date.fromisoformat(pinned)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"SEED_WEEK_START {pinned!r} is not a valid ISO date (YYYY-MM-DD).") from exc
+            if pin.weekday() != 6:
+                # A mid-week pin would skew the 7-day grid against the weekday-name
+                # demand model (and the frontend picker always snaps to Sunday).
+                raise RuntimeError(f"SEED_WEEK_START {pinned!r} is not a Sunday.")
+            return pin
+        today = date.today()
+    return today - timedelta(days=(today.weekday() + 1) % 7)  # Python weekday(): Mon=0..Sun=6
+
+
 @app.get("/api/requirements")
 def get_requirements() -> dict:
-    """The seed org as an editable requirements doc — the editor's starting point."""
-    return dataset_to_requirements(default_dataset())
+    """The seed org as an editable requirements doc — the editor's starting point.
+
+    The seed's demand is by weekday name, so the org re-dates cleanly: a fresh
+    session starts on the CURRENT week, not the week the seed data was written for.
+    Only the endpoint re-dates — default_dataset()/dataset_to_requirements keep the
+    fixed seed week that unit tests and carry-over fixtures depend on.
+    """
+    doc = dataset_to_requirements(default_dataset())
+    doc["week_start"] = current_week_start().isoformat()
+    return doc
 
 
 @app.post("/api/build")

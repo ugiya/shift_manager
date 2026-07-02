@@ -46,6 +46,20 @@ def test_weekend_shifts_are_burden_for_fairness():
     assert "R9" in soft_rules(flags)
 
 
+def test_two_imbalanced_teams_get_distinct_flag_ids():
+    """R9 flags carry no employee/shift/seats, so their id must be disambiguated by
+    team — two imbalanced teams used to share the id 'R9|None|None' (duplicate React
+    keys downstream)."""
+    a, b = emp("a", team="t1"), emp("b", team="t1")
+    c, d = emp("c", team="t2"), emp("d", team="t2")
+    seats = (night_seats(a, [0, 2], team="t1")           # t1: a=2, b=0 -> imbalance
+             + night_seats(c, [0, 2], team="t2"))        # t2: c=2, d=0 -> imbalance
+    _score, flags = evaluate(seats, employees=[a, b, c, d])
+    r9 = [f for f in flags if f["rule"] == "R9"]
+    assert len(r9) == 2
+    assert len({f["id"] for f in r9}) == 2, [f["id"] for f in r9]
+
+
 def test_fairness_is_scoped_per_team():
     # team t1 is lopsided; team t2 is balanced -> exactly one fairness flag (t1)
     a, b = emp("a", team="t1"), emp("b", team="t1")

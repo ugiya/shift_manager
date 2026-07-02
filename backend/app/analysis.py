@@ -49,8 +49,14 @@ def seat_label(seat: Seat, schedule_lookup: dict) -> str:
     return f"{role} · {project}"
 
 
-def _flag(rule, kind, weight, title, detail, *, employee=None, shift=None, seats=()):
-    key = "|".join([rule, str(employee), str(shift), *sorted(s.id for s in seats)])
+def _flag(rule, kind, weight, title, detail, *, employee=None, shift=None, seats=(), team=None):
+    # `team` only disambiguates the id of team-scoped flags (R9), which carry no
+    # employee/shift/seats — without it, two imbalanced teams would share one flag id
+    # (and collide as React keys downstream). Other flags leave it None (id unchanged).
+    parts = [rule, str(employee), str(shift), *sorted(s.id for s in seats)]
+    if team is not None:
+        parts.append(str(team))
+    key = "|".join(parts)
     return {
         "id": key,
         "rule": rule,
@@ -75,15 +81,18 @@ def derive_flags(schedule: Schedule, lookup: dict | None = None) -> list[dict]:
     for s in assigned:
         by_emp.setdefault(s.employee.id, []).append(s)
 
-    # R1 one assignment per moment (hard)
-    for a, b in combinations(assigned, 2):
-        if a.employee.id == b.employee.id and _overlap(a.shift, b.shift):
-            flags.append(_flag(
-                "R1", "hard", 0,
-                f"{emp_name(a.employee)} double-booked",
-                f"Assigned to two overlapping shifts: "
-                f"{shift_label(a.shift)} and {shift_label(b.shift)}. Neither seat counts as filled.",
-                employee=a.employee.id, seats=(a, b)))
+    # R1 one assignment per moment (hard). Only same-employee pairs can conflict, so scan
+    # within each employee's seats (mirrors constraints.py's for_each_unique_pair +
+    # Joiners.equal(employee)) rather than every pair of assigned seats in the schedule.
+    for emp_seats in by_emp.values():
+        for a, b in combinations(emp_seats, 2):
+            if _overlap(a.shift, b.shift):
+                flags.append(_flag(
+                    "R1", "hard", 0,
+                    f"{emp_name(a.employee)} double-booked",
+                    f"Assigned to two overlapping shifts: "
+                    f"{shift_label(a.shift)} and {shift_label(b.shift)}. Neither seat counts as filled.",
+                    employee=a.employee.id, seats=(a, b)))
 
     # per-employee day stats
     for emp_id, seats in by_emp.items():
@@ -260,7 +269,7 @@ def _fairness_flags(schedule: Schedule, by_emp: dict, lookup: dict) -> list[dict
                 f"Burden shifts (night/weekend) are uneven across {team}: "
                 f"spread of {spread} between the most- and least-loaded member "
                 f"(most loaded: {lookup['employees'].get(top[0].id, top[0].id)}).",
-                employee=None))
+                employee=None, team=team_id))
     return out
 
 

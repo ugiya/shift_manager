@@ -8,7 +8,10 @@
   --line: #e4e7ee;
   --line-strong: #d2d7e2;
   --brand: #4f46e5;
+  --brand-soft: #eef2ff;
+  --brand-deep: #4338ca;
   --brand-ink: #ffffff;
+  --accent: #2563eb;
   --ok: #15803d;
   --ok-bg: #e8f6ed;
   --warn: #b45309;
@@ -21,6 +24,7 @@
   --rowhdr: 86px;
   --radius: 10px;
   --shadow: 0 1px 2px rgba(20, 25, 40, 0.06), 0 4px 16px rgba(20, 25, 40, 0.05);
+  --focus-ring: 0 0 0 3px rgba(79, 70, 229, 0.25);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
@@ -108,7 +112,7 @@ h1, h2, h3, p { margin: 0; }
 .banner--error { background: var(--bad-bg); color: var(--bad); display: flex; align-items: center; gap: 12px; }
 .banner--warn { background: var(--warn-bg); color: var(--warn); }
 .banner__dismiss {
-  margin-left: auto;
+  margin-inline-start: auto;
   border: 1px solid currentColor;
   background: transparent;
   color: inherit;
@@ -229,10 +233,10 @@ h1, h2, h3, p { margin: 0; }
 .grid__corner,
 .grid__rowhdr {
   position: sticky;
-  left: 0;
+  inset-inline-start: 0;
   z-index: 2;
   background: var(--surface-2);
-  border-right: 1px solid var(--line-strong);
+  border-inline-end: 1px solid var(--line-strong);
 }
 .grid__corner { border-bottom: 1px solid var(--line); }
 .grid__rowhdr {
@@ -256,7 +260,7 @@ h1, h2, h3, p { margin: 0; }
   gap: 1px;
   padding: 7px 4px;
   border-bottom: 1px solid var(--line);
-  border-left: 1px solid var(--line);
+  border-inline-start: 1px solid var(--line);
   font-size: 12px;
 }
 .grid__dayhdr.is-weekend { background: var(--weekend-bg); }
@@ -270,7 +274,7 @@ h1, h2, h3, p { margin: 0; }
   gap: 6px;
   padding: 7px;
   border-bottom: 1px solid var(--line);
-  border-left: 1px solid var(--line);
+  border-inline-start: 1px solid var(--line);
   min-height: 48px;
   min-width: 0;
 }
@@ -295,7 +299,7 @@ h1, h2, h3, p { margin: 0; }
   background: var(--surface);
   min-width: 0;
 }
-.seat--filled { border-left: 3px solid var(--ok); }
+.seat--filled { border-inline-start: 3px solid var(--ok); }
 .seat--unfilled { border: 1px dashed var(--warn); background: var(--warn-bg); }
 .seat--exceptional { border: 1px solid var(--bad); background: var(--bad-bg); }
 
@@ -392,8 +396,8 @@ h1, h2, h3, p { margin: 0; }
   border: 1px solid var(--line);
   min-width: 0;
 }
-.flag--hard { border-left: 3px solid var(--bad); }
-.flag--soft { border-left: 3px solid var(--warn); }
+.flag--hard { border-inline-start: 3px solid var(--bad); }
+.flag--soft { border-inline-start: 3px solid var(--warn); }
 .flag__rule {
   flex: none;
   font-size: 10.5px;
@@ -426,7 +430,7 @@ h1, h2, h3, p { margin: 0; }
 
 .issues { display: flex; flex-direction: column; gap: 10px; }
 .issues__box { border-radius: var(--radius); padding: 10px 14px; font-size: 13px; }
-.issues__box ul { margin: 6px 0 0; padding-left: 18px; }
+.issues__box ul { margin: 6px 0 0; padding-inline-start: 18px; }
 .issues__box li { overflow-wrap: anywhere; }
 .issues__box--err { background: var(--bad-bg); color: var(--bad); }
 .issues__box--warn { background: var(--warn-bg); color: var(--warn); }
@@ -490,14 +494,14 @@ h1, h2, h3, p { margin: 0; }
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   padding: 10px 16px 0 16px;
 }
-.viewby__label { font-size: 12px; color: var(--ink-faint); font-weight: 600; margin-right: 2px; }
+.viewby__label { font-size: 12px; color: var(--ink-faint); font-weight: 600; margin-inline-end: 2px; }
 .viewby__btn {
   border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink-soft);
   padding: 5px 12px; border-radius: 999px; font-size: 12.5px; cursor: pointer;
 }
 .viewby__btn.is-active { background: var(--brand); color: var(--brand-ink); border-color: var(--brand); }
 .viewby__ro {
-  margin-left: 6px; font-size: 11px; color: var(--ink-faint); font-style: italic;
+  margin-inline-start: 6px; font-size: 11px; color: var(--ink-faint); font-style: italic;
   border: 1px dashed var(--line-strong); border-radius: 6px; padding: 2px 7px;
 }
 .project__cross { font-size: 12px; color: var(--brand); font-weight: 500; }
@@ -506,7 +510,7 @@ h1, h2, h3, p { margin: 0; }
 .roster { display: grid; min-width: max-content; }
 .roster__name { font-weight: 600; }
 .rocell {
-  border-top: 1px solid var(--line); border-left: 1px solid var(--line);
+  border-top: 1px solid var(--line); border-inline-start: 1px solid var(--line);
   min-height: 40px; padding: 4px; display: flex; flex-wrap: wrap; gap: 3px; align-content: flex-start;
 }
 .rocell.is-weekend { background: var(--surface-2, #f7f7fb); }
@@ -520,7 +524,7 @@ h1, h2, h3, p { margin: 0; }
 
 .roseat {
   font-size: 12px; padding: 3px 7px; border-radius: 6px; margin: 2px 0;
-  border-left: 3px solid var(--ok); background: #fff;
+  border-inline-start: 3px solid var(--ok); background: #fff;
   display: flex; align-items: baseline; gap: 6px;
 }
 .roseat--unfilled { border: 1px dashed var(--warn); background: var(--warn-bg); color: var(--ink-faint); }
@@ -555,7 +559,7 @@ h1, h2, h3, p { margin: 0; }
 .roassign__empty { font-size: 11px; color: var(--ink-faint); padding: 8px; }
 .roassign__opt {
   display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
-  width: 100%; text-align: left; border: none; background: transparent; cursor: pointer;
+  width: 100%; text-align: start; border: none; background: transparent; cursor: pointer;
   padding: 5px 8px; font-size: 11px; border-top: 1px solid var(--line);
 }
 .roassign__opt:hover { background: var(--surface-2); }
@@ -598,3 +602,197 @@ h1, h2, h3, p { margin: 0; }
 .iobar__msg { font-size: 12px; color: var(--ink-soft); }
 .btn--sm { padding: 5px 10px; font-size: 12.5px; cursor: pointer; }
 .btn.is-disabled { opacity: 0.5; pointer-events: none; }
+
+/* --- session controls: undo/redo + reset-to-seed ---------------------------- */
+.histbtns { display: inline-flex; gap: 4px; }
+.btn--icon { min-width: 30px; padding: 5px 8px; font-size: 14px; line-height: 1; }
+.iorow { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.iorow .iobar { flex: 1; min-width: 0; }
+.resetconfirm { display: inline-flex; align-items: center; gap: 8px; }
+.resetconfirm__msg { font-size: 12px; font-weight: 600; color: var(--bad); }
+
+/* --- side panel (Review | Workload tabs) ------------------------------------ */
+.sidepanel { position: sticky; top: 78px; min-width: 0; max-height: calc(100vh - 96px); display: flex; flex-direction: column; }
+.sidepanel__tabs { display: flex; gap: 4px; padding: 0 4px; }
+.sidepanel__tab {
+  border: 1px solid var(--line); border-bottom: none; background: var(--bg);
+  color: var(--ink-faint); font-weight: 600; font-size: 12.5px; padding: 6px 14px;
+  border-radius: 8px 8px 0 0; cursor: pointer;
+}
+.sidepanel__tab.is-active { background: var(--surface); color: var(--ink); }
+.sidepanel .flags { position: static; max-height: none; overflow-y: auto; flex: 1; }
+
+.workload {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 12px; overflow-y: auto; flex: 1;
+}
+.workload__table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.workload__table th {
+  text-align: start; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--ink-faint); padding: 4px 6px; border-bottom: 1px solid var(--line);
+}
+.workload__table td { padding: 5px 6px; border-bottom: 1px solid var(--line); }
+.workload__name { max-width: 120px; }
+.workload__emp { display: block; font-weight: 600; }
+.workload__team { display: block; font-size: 11px; color: var(--ink-faint); }
+.workload__burden { position: relative; min-width: 56px; }
+.workload__bar {
+  position: absolute; inset-block: 4px; inset-inline-start: 0; max-width: 100%;
+  background: var(--warn-bg, #fdf1d7); border-radius: 3px; z-index: 0;
+}
+.workload__num { position: relative; z-index: 1; font-weight: 600; }
+.workload__delta { color: var(--ink-faint); }
+.workload__delta.is-over { color: var(--bad); font-weight: 600; }
+.workload__empty { color: var(--ink-faint); font-size: 13px; padding: 8px; }
+.workload__note { margin: 10px 2px 0; font-size: 11px; color: var(--ink-faint); }
+
+/* --- printable schedule ------------------------------------------------------ */
+.viewby__spacer { flex: 1; }
+.printonly { display: none; }
+@media print {
+  .app > *:not(.printonly) { display: none !important; }
+  .printonly { display: block !important; }
+  body { background: #fff; }
+}
+.print__title { font-size: 18px; margin: 0 0 12px; }
+.print__team { margin-bottom: 18px; break-inside: avoid; }
+.print__team h2 { font-size: 14px; margin: 0 0 6px; }
+.print__site { font-weight: 400; color: #555; }
+.print__table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.print__table th, .print__table td {
+  border: 1px solid #999; padding: 3px 5px; text-align: start; vertical-align: top;
+}
+.print__table thead th.is-weekend { background: #eee; }
+.print__shift { white-space: nowrap; }
+.print__seat.is-unfilled { color: #888; }
+.print__what { color: #555; font-size: 10px; }
+
+/* ---------- RTL (Hebrew) ----------------------------------------------------- */
+/* <html dir="rtl"> is set by the i18n provider. Flex/grid flip automatically; the
+   physical left/right properties above were converted to logical ones
+   (border-inline-*, margin-inline-*, inset-inline-*, text-align: start) so both
+   directions render from the same rules. Nothing else is direction-specific. */
+
+/* --- Round 3 visual polish (additive overrides — no layout metric changes) --------- */
+
+/* Interactive affordances: consistent motion + a visible keyboard focus everywhere. */
+.btn, .viewtab, .viewby__btn, .sitetab, .sidepanel__tab, .pday, .stepper__btn,
+.roassign__btn, .roassign__opt, .seat select, .in {
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease,
+    box-shadow 120ms ease, filter 120ms ease;
+}
+.btn:focus-visible, .viewtab:focus-visible, .viewby__btn:focus-visible,
+.sitetab:focus-visible, .sidepanel__tab:focus-visible, .pday:focus-visible,
+.stepper__btn:focus-visible, .roassign__btn:focus-visible, .roassign__opt:focus-visible,
+.seat select:focus-visible, .in:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Primary action reads as THE action. */
+.btn--primary {
+  background: linear-gradient(180deg, var(--brand), var(--brand-deep));
+  border-color: var(--brand-deep);
+}
+.btn--primary:hover:not(:disabled) { filter: brightness(1.06); }
+.btn:hover:not(:disabled) { border-color: var(--line-strong); }
+.btn:disabled { cursor: not-allowed; }
+
+/* Active view/site tabs get a brand underline instead of relying on background alone. */
+.viewtab.is-active, .viewby__btn.is-active, .sitetab.is-active {
+  box-shadow: inset 0 -2px 0 var(--brand);
+}
+.sidepanel__tab.is-active { box-shadow: inset 0 2px 0 var(--brand); }
+
+/* Chips & seats: quiet at rest, obvious on hover. */
+.rochip { box-shadow: 0 1px 1px rgba(20, 25, 40, 0.05); }
+.rochip:hover { box-shadow: 0 1px 3px rgba(20, 25, 40, 0.12); }
+.seat select:hover:not(:disabled) { border-color: var(--brand); }
+.roassign__opt:hover { background: var(--brand-soft); }
+
+/* Workload table: zebra rows so long rosters scan; bar tint matches the warn family. */
+.workload__table tbody tr:nth-child(even) td { background: var(--surface-2); }
+.workload__bar { background: var(--warn-bg); }
+.workload__table tbody tr:hover td { background: var(--brand-soft); }
+
+/* Banners ease in instead of popping. */
+.banner { animation: banner-in 160ms ease-out; }
+@keyframes banner-in {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Flags: hairline hierarchy + hover lift so individual flags read as items. */
+.flag { border-radius: 8px; transition: background-color 120ms ease; }
+.flag:hover { background: var(--surface-2); }
+
+/* Score badge: a touch more presence. */
+.badge { box-shadow: inset 0 0 0 1px rgba(20, 25, 40, 0.04); }
+
+/* Grid scrollbars: slimmer, quieter (WebKit + Firefox). */
+.grid-scroll { scrollbar-width: thin; }
+.grid-scroll::-webkit-scrollbar { height: 8px; }
+.grid-scroll::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 4px; }
+.grid-scroll::-webkit-scrollbar-track { background: transparent; }
+
+/* RTL: flip the physical bits the auto-flipping layout can't. */
+[dir="rtl"] .workload__bar { inset: 4px 0 4px auto; }
+[dir="rtl"] .workload__table th { text-align: right; }
+
+/* --- week navigation: stale-week dialog + topbar week picker ----------------------- */
+.modal {
+  position: fixed; inset: 0; z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(20, 25, 40, 0.45); padding: 20px;
+}
+.modal__box {
+  display: flex; flex-direction: column; gap: 12px;
+  max-width: 460px; padding: 22px 24px;
+  background: var(--surface); border-radius: var(--radius);
+  box-shadow: 0 8px 40px rgba(20, 25, 40, 0.25);
+  animation: banner-in 160ms ease-out;
+}
+.modal__title { font-size: 16px; }
+.modal__body { font-size: 13.5px; color: var(--ink-soft); }
+.modal__actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; }
+
+.weekpick {
+  margin-inline-start: 8px;
+  border: 1px solid var(--line-strong); border-radius: 6px;
+  background: var(--surface); color: var(--ink);
+  font-family: inherit; font-size: 12px; padding: 2px 6px;
+}
+.weekpick:hover:not(:disabled) { border-color: var(--brand); }
+.weekpick:disabled { opacity: 0.55; cursor: not-allowed; }
+
+/* --- editor tabs + filters + pending refs + per-week ticks (2026-07-02) ------------ */
+.edtabs { display: flex; gap: 4px; }
+.edtab {
+  border: 1px solid var(--line); border-bottom: none; background: var(--bg);
+  color: var(--ink-faint); font-weight: 600; font-size: 13px; padding: 7px 16px;
+  border-radius: 8px 8px 0 0; cursor: pointer;
+}
+.edtab.is-active { background: var(--surface); color: var(--ink); box-shadow: inset 0 2px 0 var(--brand); }
+.editor .edtabs + .esec, .editor .edtabs + .efilter { margin-top: -8px; }
+.efilter {
+  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+}
+/* A deleted reference awaiting "Please choose" — the select wears the warn color. */
+.in--pending { border-color: var(--warn); background: var(--warn-bg); color: var(--warn); }
+.esec__body--wrap { flex-direction: row; flex-wrap: wrap; gap: 4px 18px; padding: 10px 14px; }
+.weektick.is-off { color: var(--ink-faint); }
+.crew__proj.is-off { opacity: 0.55; }
+
+/* Role header in the Project view: name ABOVE the stepper — side-by-side the stepper
+   starved the name down to one letter per line inside the 86px row-header column. */
+.pgroup__rolehdr { flex-direction: column; justify-content: center; gap: 4px; }
+.pgroup__rolename { overflow-wrap: break-word; }
+
+/* Workload table must FIT the 340px sidebar — tighter type/padding, and a horizontal
+   scroll as the safety net so the "vs team" column is never silently clipped. */
+.workload { overflow-x: auto; }
+.workload__table th { font-size: 10px; padding: 4px 4px; letter-spacing: 0.02em; }
+.workload__table td { padding: 4px 5px; }
+.workload__name { max-width: 104px; }
+.workload__team { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 104px; }

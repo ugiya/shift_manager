@@ -7,6 +7,10 @@ async function openEditor(page: Page) {
   await expect(page.getByTestId("editor")).toBeVisible();
 }
 
+async function openTab(page: Page, tab: "org" | "employees" | "demand") {
+  await page.getByTestId(`editor-tab-${tab}`).click();
+}
+
 function overflowOffenders() {
   const vw = window.innerWidth;
   const bad: string[] = [];
@@ -24,46 +28,155 @@ function overflowOffenders() {
   return bad;
 }
 
-test("editor shows every section with the seed data", async ({ page }) => {
+// --- 2026-07-02 layout: Organization | Employee Preferences | Project Requirements ----
+
+test("the editor is tabbed; each tab shows its sections", async ({ page }) => {
   await openEditor(page);
-  const titles = await page.locator(".esec__head h3").allTextContents();
-  expect(titles).toEqual(["Sites", "Roles", "Shift types", "Teams", "Projects", "Employees", "Demand"]);
-  await expect(page.getByTestId("employee-row")).toHaveCount(40);
-  await expect(page.getByTestId("demand-row")).toHaveCount(12);
+  // Organization (default tab): org structure only.
+  await expect(page.locator(".esec__head h3")).toHaveText(["Sites", "Roles", "Shift types", "Teams", "Projects"]);
   await expect(page.getByTestId("site-row")).toHaveCount(4);
+
+  await openTab(page, "employees");
+  await expect(page.locator(".esec__head h3")).toHaveText(["Employees"]);
+  await expect(page.getByTestId("employee-row")).toHaveCount(40);
+
+  await openTab(page, "demand");
+  await expect(page.locator(".esec__head h3")).toHaveText(["Working this week", "Demand"]);
+  await expect(page.getByTestId("demand-row")).toHaveCount(12);
 });
 
-test("adding a site appends a row; the new one is deletable", async ({ page }) => {
+test("the employee list filters by team", async ({ page }) => {
+  await openEditor(page);
+  await openTab(page, "employees");
+  await expect(page.getByTestId("employee-row")).toHaveCount(40);
+
+  await page.getByTestId("employee-team-filter").selectOption("team-alpha");
+  const rows = page.getByTestId("employee-row");
+  await expect(rows).toHaveCount(8);
+  for (const sel of await page.getByTestId("employee-team").all()) {
+    await expect(sel).toHaveValue("team-alpha");
+  }
+
+  await page.getByTestId("employee-team-filter").selectOption("");
+  await expect(page.getByTestId("employee-row")).toHaveCount(40);
+});
+
+test("Project Requirements filters demand rows and crew to one project", async ({ page }) => {
+  await openEditor(page);
+  await openTab(page, "demand");
+  await expect(page.getByTestId("demand-row")).toHaveCount(12);
+
+  await page.getByTestId("project-filter").selectOption("proj-apollo");
+  const n = await page.getByTestId("demand-row").count();
+  expect(n).toBeGreaterThan(0);
+  expect(n).toBeLessThan(12);
+  // Within the visible rows, only Apollo's crew chunk is shown (the project lead's view).
+  expect(await page.locator('[data-testid^="crew-"]').count()).toBeGreaterThan(0);
+  expect(await page
+    .locator('[data-testid^="crew-"]:not([data-testid^="crew-proj-apollo-"])').count()).toBe(0);
+
+  await page.getByTestId("project-filter").selectOption("");
+  await expect(page.getByTestId("demand-row")).toHaveCount(12);
+});
+
+// --- null-out deletes: delete is always enabled; references become "Please choose" ----
+
+test("adding a site appends a row; deleting it removes it again", async ({ page }) => {
   await openEditor(page);
   await expect(page.getByTestId("site-row")).toHaveCount(4);
   await page.getByTestId("add-site").click();
   await expect(page.getByTestId("site-row")).toHaveCount(5);
-  // the new (last) site is unreferenced -> its delete is enabled
-  const lastDelete = page.getByTestId("site-row").last().getByTestId("delete-site");
-  await expect(lastDelete).toBeEnabled();
-  await lastDelete.click();
+  await page.getByTestId("site-row").last().getByTestId("delete-site").click();
   await expect(page.getByTestId("site-row")).toHaveCount(4);
 });
 
-test("a referenced site cannot be deleted", async ({ page }) => {
+test("deleting a referenced site leaves its teams on 'Please choose' until re-picked", async ({ page }) => {
   await openEditor(page);
-  // Tel Aviv HQ has teams -> delete disabled
-  const ta = page.locator('[data-testid=site-row][data-id="site-ta"]');
-  await expect(ta.getByTestId("delete-site")).toBeDisabled();
+  await page.locator('[data-testid=site-row][data-id="site-ta"]').getByTestId("delete-site").click();
+  await expect(page.getByTestId("site-row")).toHaveCount(3);
+
+  // Its teams now carry a pending site reference…
+  const pending = page.locator("select[data-testid=team-site].in--pending");
+  expect(await pending.count()).toBeGreaterThan(0);
+  // …which blocks the Save with an actionable error (not a spooky unknown-ref one).
+  await page.getByTestId("editor-save").click();
+  await expect(page.getByTestId("editor-errors")).toContainText("has no site — choose one");
+
+  // Re-picking a site (the placeholder is disabled, index 1 = first real site) heals it.
+  while (await pending.count()) await pending.first().selectOption({ index: 1 });
+  await page.getByTestId("editor-save").click();
+  await expect(page.getByTestId("editor-errors")).toHaveCount(0);
 });
 
-test("a referenced role cannot be deleted but an unused new one can", async ({ page }) => {
+test("deleting a referenced role strips it from employees and demand crews cleanly", async ({ page }) => {
   await openEditor(page);
-  // Developer is used -> disabled
-  const devRow = page.locator('[data-testid=role-row][data-id="role-dev"]');
-  await expect(devRow.getByTestId("delete-role")).toBeDisabled();
-  // a fresh role is unused -> deletable
-  await page.getByTestId("add-role").click();
-  await expect(page.getByTestId("role-row").last().getByTestId("delete-role")).toBeEnabled();
+  await page.locator('[data-testid=role-row][data-id="role-dev"]').getByTestId("delete-role").click();
+  await expect(page.locator('[data-testid=role-row][data-id="role-dev"]')).toHaveCount(0);
+  // Nothing dangles: the role vanished from employee chips and crew counts, so Save is clean.
+  await page.getByTestId("editor-save").click();
+  await expect(page.getByTestId("editor-errors")).toHaveCount(0);
+  await openTab(page, "employees");
+  await expect(page.locator('[data-testid=chips-roles] [data-chip="role-dev"]')).toHaveCount(0);
 });
+
+test("deleting a shift type un-prefers it and leaves its demand on 'Please choose'", async ({ page }) => {
+  await openEditor(page);
+  await page.locator('[data-testid=shifttype-row][data-id="st-morning"]').getByTestId("delete-shifttype").click();
+  await expect(page.locator('[data-testid=shifttype-row][data-id="st-morning"]')).toHaveCount(0);
+
+  await openTab(page, "demand");
+  expect(await page.locator("select[data-testid=demand-shifttype].in--pending").count()).toBeGreaterThan(0);
+  await page.getByTestId("editor-save").click();
+  const errors = page.getByTestId("editor-errors");
+  await expect(errors).toContainText("has no shift type — choose one");
+  // The preference lists were pruned with it — no stale-preference error appears.
+  await expect(errors).not.toContainText("prefers unknown shift type");
+});
+
+test("deleting a team leaves its employees and demand on 'Please choose'", async ({ page }) => {
+  await openEditor(page);
+  await page.locator('[data-testid=team-row][data-id="team-alpha"]').getByTestId("delete-team").click();
+  await expect(page.locator('[data-testid=team-row][data-id="team-alpha"]')).toHaveCount(0);
+
+  await openTab(page, "employees");
+  expect(await page.locator("select[data-testid=employee-team].in--pending").count()).toBe(8);
+  await page.getByTestId("editor-save").click();
+  await expect(page.getByTestId("editor-errors")).toContainText("has no team — choose one");
+});
+
+// --- per-week project tick (Project Requirements) --------------------------------------
+
+test("unticking a project pauses it for the week: no seats, hidden from employee prefs", async ({ page }) => {
+  await openEditor(page);
+  await openTab(page, "demand");
+  await page.locator('[data-testid=project-thisweek][data-project-id="proj-apollo"]').uncheck();
+  await page.getByTestId("editor-save").click();
+  await expect(page.getByTestId("editor-errors")).toHaveCount(0);
+
+  // Hidden as a project in the employees section (membership itself is kept).
+  await openTab(page, "employees");
+  await expect(page.locator('[data-testid=chips-projects] [data-chip="proj-apollo"]')).toHaveCount(0);
+
+  // No Apollo seats materialise this week; the rest of the org still runs.
+  await page.getByTestId("nav-schedule").click();
+  await page.getByTestId("viewby-site").click();
+  await expect(page.locator('[data-seat-id*="proj-apollo"]')).toHaveCount(0);
+  await expect(page.locator("[data-seat-id]").first()).toBeVisible();
+
+  // Re-ticking brings the seats back.
+  await page.getByTestId("nav-editor").click();
+  await openTab(page, "demand");
+  await page.locator('[data-testid=project-thisweek][data-project-id="proj-apollo"]').check();
+  await page.getByTestId("editor-save").click();
+  await page.getByTestId("nav-schedule").click();
+  await expect(page.locator('[data-seat-id*="proj-apollo"]').first()).toBeVisible();
+});
+
+// --- employees tab ---------------------------------------------------------------------
 
 test("add and remove an employee", async ({ page }) => {
   await openEditor(page);
+  await openTab(page, "employees");
   await page.getByTestId("add-employee").click();
   await expect(page.getByTestId("employee-row")).toHaveCount(41);
   const row = page.getByTestId("employee-row").last();
@@ -75,6 +188,7 @@ test("add and remove an employee", async ({ page }) => {
 
 test("toggling a role chip on an employee persists", async ({ page }) => {
   await openEditor(page);
+  await openTab(page, "employees");
   await page.getByTestId("add-employee").click();
   const row = page.getByTestId("employee-row").last();
   const chip = row.getByTestId("chips-roles").locator('[data-chip="role-dev"]');
@@ -85,6 +199,7 @@ test("toggling a role chip on an employee persists", async ({ page }) => {
 
 test("an employee's unavailable dates can be added and removed (Phase 3)", async ({ page }) => {
   await openEditor(page);
+  await openTab(page, "employees");
   await page.getByTestId("add-employee").click();
   const control = page.getByTestId("employee-row").last().getByTestId("employee-unavailable");
   await expect(control.getByTestId("unavail-date")).toHaveCount(0);
@@ -98,6 +213,7 @@ test("an employee's unavailable dates can be added and removed (Phase 3)", async
 
 test("an employee's preferred shift types can be toggled (Phase 4)", async ({ page }) => {
   await openEditor(page);
+  await openTab(page, "employees");
   await page.getByTestId("add-employee").click();
   const chips = page.getByTestId("employee-row").last().getByTestId("chips-prefers");
   await expect(chips).toBeVisible();
@@ -107,22 +223,11 @@ test("an employee's preferred shift types can be toggled (Phase 4)", async ({ pa
   await expect(firstChip).toHaveClass(/is-on/);
 });
 
-test("a shift type preferred by an employee cannot be deleted (Phase 4 referential integrity)", async ({ page }) => {
-  await openEditor(page);
-  // a fresh shift type is unused by demand -> deletable
-  await page.getByTestId("add-shifttype").click();
-  const stRow = page.getByTestId("shifttype-row").last();
-  const stId = await stRow.getAttribute("data-id");
-  await expect(stRow.getByTestId("delete-shifttype")).toBeEnabled();
-  // an employee prefers it -> now referenced -> delete blocked (backend would reject a stale id)
-  await page.getByTestId("add-employee").click();
-  await page.getByTestId("employee-row").last().getByTestId("chips-prefers")
-    .locator(`[data-chip="${stId}"]`).click();
-  await expect(stRow.getByTestId("delete-shifttype")).toBeDisabled();
-});
+// --- demand tab --------------------------------------------------------------------------
 
 test("a demand row with no days blocks solving, and fixing it re-enables", async ({ page }) => {
   await openEditor(page);
+  await openTab(page, "demand");
   await page.getByTestId("add-demand").click();
   const row = page.getByTestId("demand-row").last();
   // new row defaults to Sunday; turn it off -> no days. Edits are LOCAL until Save (Round 2 #1).
@@ -140,6 +245,7 @@ test("a demand row with no days blocks solving, and fixing it re-enables", async
 
 test("the blocked banner shows in the schedule view while there are errors", async ({ page }) => {
   await openEditor(page);
+  await openTab(page, "demand");
   await page.getByTestId("add-demand").click();
   await page.getByTestId("demand-row").last().locator('[data-testid=day-toggle][data-day="Sun"]').click();
   await page.getByTestId("editor-save").click();
@@ -150,6 +256,7 @@ test("the blocked banner shows in the schedule view while there are errors", asy
 
 test("editing the org then solving still produces a full, feasible schedule", async ({ page }) => {
   await openEditor(page);
+  await openTab(page, "employees");
   // add a developer to Team Alpha on Apollo (valid, additive)
   await page.getByTestId("add-employee").click();
   const row = page.getByTestId("employee-row").last();
@@ -208,6 +315,7 @@ test("saving an edit invalidates the prior solved score at once (no stale-feasib
   await expect(page.getByTestId("score-badge")).toHaveAttribute("data-feasible", "true", { timeout: 40000 });
   // Edit the org into an invalid state and Save.
   await page.getByTestId("nav-editor").click();
+  await openTab(page, "demand");
   await page.getByTestId("add-demand").click();
   await page.getByTestId("demand-row").last().locator('[data-testid=day-toggle][data-day="Sun"]').click();
   await page.getByTestId("editor-save").click();

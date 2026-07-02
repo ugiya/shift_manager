@@ -59,12 +59,27 @@ export function findShift(
 
 export const WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-export function dayHeader(dateIso: string): { name: string; dom: string; weekend: boolean } {
+// Which weekdays count as the weekend comes from the payload (`ds.weekend_weekdays`,
+// mirroring the backend's WEEKEND_WEEKDAYS config) so what the UI shades always matches
+// what the weekend rules (R7/R9) actually score. The Fri/Sat fallback only covers a
+// payload from an older backend.
+// `mon`/`monthStart` let a grid label the month where it matters (first column, and the
+// column where a new month begins) without repeating it on all seven days.
+export function dayHeader(
+  dateIso: string, weekendWeekdays?: number[], dayNames?: string[], locale?: string,
+): { name: string; dom: string; mon: string; monthStart: boolean; weekend: boolean } {
   const d = new Date(dateIso + "T00:00:00");
   const jsDay = d.getDay(); // 0=Sun..6=Sat
   const pyWeekday = (jsDay + 6) % 7; // Mon=0..Sun=6
-  const name = WEEKDAY_NAMES[pyWeekday];
-  return { name, dom: String(d.getDate()), weekend: pyWeekday === 4 || pyWeekday === 5 };
+  const name = (dayNames ?? WEEKDAY_NAMES)[pyWeekday];
+  const wk = weekendWeekdays ?? [4, 5];
+  return {
+    name,
+    dom: String(d.getDate()),
+    mon: d.toLocaleDateString(locale, { month: "short" }),
+    monthStart: d.getDate() === 1,
+    weekend: wk.includes(pyWeekday),
+  };
 }
 
 export function countFilled(ds: Dataset, assignments: Assignments): { filled: number; total: number } {

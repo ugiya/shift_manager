@@ -173,16 +173,28 @@ def preferred_second_day_off(cf: ConstraintFactory) -> Constraint:
             .as_constraint("R8 preferred second day off"))
 
 
+# R9's quadratic must fit Timefold's 32-bit soft score level. MAX_CARRYOVER_BURDEN
+# bounds the client's carry-over, but this week's per-person count can in principle
+# reach MAX_SEATS (20 000), so clamp the squared operand at 20 000 — unreachable by
+# any realistic one-person week, and W_FAIRNESS * 20_000**2 = 2.0e9 stays below
+# 2**31 - 1 for a single match.
+FAIRNESS_SQUARE_CAP = 20_000
+
+
 def fairness_burden(cf: ConstraintFactory) -> Constraint:
     # R9 (soft objective): spread Burden Shifts (night/weekend) evenly, measured
     # cumulatively across weeks via carry-over. Penalising the marginal squared
     # load makes piling burdens on an already-loaded person progressively costly.
+    def marginal_squared_load(emp, c: int) -> int:
+        # Plain int arithmetic only — this runs inside Timefold's jpyinterpreter.
+        total = c + emp.carryover_burden
+        if total > FAIRNESS_SQUARE_CAP:
+            total = FAIRNESS_SQUARE_CAP
+        return W_FAIRNESS * (total * total - emp.carryover_burden * emp.carryover_burden)
     return (cf.for_each(Seat)
             .filter(lambda s: s.is_burden)
             .group_by(lambda s: s.employee, ConstraintCollectors.count())
-            .penalize(HardMediumSoftScore.ONE_SOFT,
-                      lambda emp, c: W_FAIRNESS
-                      * ((c + emp.carryover_burden) ** 2 - emp.carryover_burden ** 2))
+            .penalize(HardMediumSoftScore.ONE_SOFT, marginal_squared_load)
             .as_constraint("R9 fairness (burden balance)"))
 
 

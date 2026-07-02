@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import type { Assignments, Dataset, Employee, Seat, Shift } from "../types";
 import { dayHeader, seatState } from "../lib/lookups";
+import { fmtFull } from "../lib/dates";
+import { useI18n } from "../lib/i18n";
 
 // Phase 6 + Round 2 #4: people-as-rows roster (Team & Employee views). Each row is an
 // employee; each column is a day; a cell shows the shift(s) that person works that day AND
@@ -50,6 +52,7 @@ function RosterTable({ ds, employees, assignments, onChange, locked }: {
   ds: Dataset; employees: Employee[]; assignments: Assignments;
   onChange: (seatId: string, employeeId: string | null) => void; locked: boolean;
 }) {
+  const { t, lang, weekdayNames } = useI18n();
   const { shiftById, seatsByTeamDate } = useMemo(() => buildIndex(ds), [ds]);
   const assigned = useMemo(() => assignedIndex(ds, assignments, shiftById), [ds, assignments, shiftById]);
   const empName = useMemo(() => new Map(ds.employees.map((e) => [e.id, e.name])), [ds]);
@@ -59,12 +62,13 @@ function RosterTable({ ds, employees, assignments, onChange, locked }: {
     <div className="grid-scroll">
       <div className="roster" style={{ gridTemplateColumns: `var(--rowhdr) repeat(7, minmax(120px, 1fr))` }}>
         <div className="grid__corner" />
-        {ds.days.map((d) => {
-          const h = dayHeader(d);
+        {ds.days.map((d, i) => {
+          const h = dayHeader(d, ds.weekend_weekdays, weekdayNames, lang === "he" ? "he-IL" : undefined);
           return (
-            <div key={d} className={`grid__dayhdr${h.weekend ? " is-weekend" : ""}`}>
+            <div key={d} className={`grid__dayhdr${h.weekend ? " is-weekend" : ""}`}
+              title={fmtFull(d, lang)}>
               <span className="grid__dayname">{h.name}</span>
-              <span className="grid__daydom">{h.dom}</span>
+              <span className="grid__daydom">{h.dom}{(i === 0 || h.monthStart) ? ` ${h.mon}` : ""}</span>
             </div>
           );
         })}
@@ -73,7 +77,7 @@ function RosterTable({ ds, employees, assignments, onChange, locked }: {
             <div className="grid__rowhdr roster__name">{e.name}</div>
             {ds.days.map((d) => {
               const cells = assigned.get(e.id)?.get(d) ?? [];
-              const weekend = dayHeader(d).weekend;
+              const weekend = dayHeader(d, ds.weekend_weekdays, weekdayNames).weekend;
               const key = `${e.id}|${d}`;
               return (
                 <div key={d} className={`rocell${weekend ? " is-weekend" : ""}`} data-testid="roster-cell">
@@ -86,7 +90,7 @@ function RosterTable({ ds, employees, assignments, onChange, locked }: {
                         {seat.kind === "manager" && <span aria-hidden>★</span>} {shift.shift_type_name}
                         {!locked && (
                           <button type="button" className="rochip__rm" data-testid="roster-remove"
-                            title="Remove from this shift" onClick={() => onChange(seat.id, null)}>×</button>
+                            title={t("removeFromShift")} onClick={() => onChange(seat.id, null)}>×</button>
                         )}
                       </span>
                     );
@@ -115,6 +119,7 @@ function AssignControl({ open, onOpen, onClose, seats, shiftById, assignments, e
   seats: Seat[]; shiftById: Map<string, Shift>; assignments: Assignments;
   empName: Map<string, string>; emp: Employee; onPick: (seatId: string) => void;
 }) {
+  const { t } = useI18n();
   // The person's own team's seats that day they don't already fill. Open eligible seats first,
   // then open exceptional (needs sign-off), then occupied seats as an explicit "Replace someone".
   const choices = seats.filter((s) => assignments[s.id] !== emp.id);
@@ -134,7 +139,7 @@ function AssignControl({ open, onOpen, onClose, seats, shiftById, assignments, e
         data-testid="roster-assign-option" data-seat-id={s.id} data-replace={replace} data-eligible={eligible}
         onClick={() => onPick(s.id)}>
         <span className="roassign__lbl">{s.kind === "manager" && <span aria-hidden>★</span>} {st} · {s.label}</span>
-        <span className="roassign__occ">{occ ? `replaces ${empName.get(occ) ?? occ}` : eligible ? "unfilled" : "needs sign-off"}</span>
+        <span className="roassign__occ">{occ ? t("replaces", { name: empName.get(occ) ?? occ }) : eligible ? t("unfilled") : t("needsSignoff")}</span>
       </button>
     );
   };
@@ -142,15 +147,15 @@ function AssignControl({ open, onOpen, onClose, seats, shiftById, assignments, e
   return (
     <div className="roassign">
       <button type="button" className="roassign__btn" data-testid="roster-assign"
-        aria-expanded={open} onClick={open ? onClose : onOpen}>{open ? "× close" : "+ assign"}</button>
+        aria-expanded={open} onClick={open ? onClose : onOpen}>{open ? t("close") : t("assign")}</button>
       {open && (
         <div className="roassign__menu" data-testid="roster-assign-menu" role="menu">
-          {choices.length === 0 && <div className="roassign__empty">No seats for {emp.name}’s team this day.</div>}
-          {eligibleOpen.length > 0 && <div className="roassign__group">Eligible</div>}
+          {choices.length === 0 && <div className="roassign__empty">{t("noSeatsFor", { name: emp.name })}</div>}
+          {eligibleOpen.length > 0 && <div className="roassign__group">{t("eligible")}</div>}
           {eligibleOpen.map((s) => option(s, false))}
-          {exceptionalOpen.length > 0 && <div className="roassign__group">Exceptional (needs sign-off)</div>}
+          {exceptionalOpen.length > 0 && <div className="roassign__group">{t("exceptional")}</div>}
           {exceptionalOpen.map((s) => option(s, false))}
-          {occupied.length > 0 && <div className="roassign__group roassign__group--replace">Replace someone</div>}
+          {occupied.length > 0 && <div className="roassign__group roassign__group--replace">{t("replaceSomeone")}</div>}
           {occupied.map((s) => option(s, true))}
         </div>
       )}
@@ -158,14 +163,15 @@ function AssignControl({ open, onOpen, onClose, seats, shiftById, assignments, e
   );
 }
 
-export default function RosterView({ ds, assignments, groupByTeam, onChange, locked }: {
+export default function RosterView({ ds, assignments, groupByTeam, onChange, locked, dirty = false }: {
   ds: Dataset; assignments: Assignments; groupByTeam: boolean;
-  onChange: (seatId: string, employeeId: string | null) => void; locked: boolean;
+  onChange: (seatId: string, employeeId: string | null) => void; locked: boolean; dirty?: boolean;
 }) {
+  const { t } = useI18n();
   const byName = (a: Employee, b: Employee) => a.name.localeCompare(b.name);
   const lockHint = locked && (
     <div className="banner banner--warn" data-testid="roster-locked" role="status">
-      Requirement changes pending — Save or Discard them (in Requirements or Project) to edit assignments here.
+      {dirty ? t("lockedDirty") : t("lockedWorking")}
     </div>
   );
 

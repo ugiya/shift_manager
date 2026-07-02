@@ -1,4 +1,5 @@
 import type { Flag, ScoreInfo } from "../types";
+import { useI18n } from "../lib/i18n";
 
 interface Props {
   flags: Flag[];
@@ -7,14 +8,15 @@ interface Props {
 }
 
 export default function FlagsPanel({ flags, score, validating }: Props) {
+  const { t } = useI18n();
   const hard = flags.filter((f) => f.kind === "hard");
   const soft = flags.filter((f) => f.kind === "soft");
 
   return (
     <aside className="flags" data-testid="flags-panel">
       <div className="flags__head">
-        <h2 className="flags__title">Review</h2>
-        {validating && <span className="flags__busy" data-testid="validating">re-checking…</span>}
+        <h2 className="flags__title">{t("reviewTitle")}</h2>
+        {validating && <span className="flags__busy" data-testid="validating">{t("rechecking")}</span>}
       </div>
 
       {score && (
@@ -22,24 +24,24 @@ export default function FlagsPanel({ flags, score, validating }: Props) {
           className={`scoreline ${score.feasible ? "scoreline--ok" : "scoreline--bad"}`}
           data-testid="score-detail"
         >
-          {score.feasible ? "No hard violations" : `${hard.length} hard violation(s)`} ·{" "}
-          {soft.length} compromise(s)
+          {score.feasible ? t("noHardViolations") : t("hardViolations", { n: hard.length })} ·{" "}
+          {t("compromises", { n: soft.length })}
         </div>
       )}
 
       <FlagGroup
         kind="hard"
-        title="Infeasibilities"
-        subtitle="Hard rules broken — must be fixed"
+        title={t("infeasibilities")}
+        subtitle={t("infeasibilitiesSub")}
         flags={hard}
-        emptyText="None — the schedule is legal."
+        emptyText={t("infeasibilitiesEmpty")}
       />
       <FlagGroup
         kind="soft"
-        title="Compromises"
-        subtitle="Soft rules bent — accepted & reported"
+        title={t("compromisesTitle")}
+        subtitle={t("compromisesSub")}
         flags={soft}
-        emptyText="None — nothing was compromised."
+        emptyText={t("compromisesEmpty")}
       />
     </aside>
   );

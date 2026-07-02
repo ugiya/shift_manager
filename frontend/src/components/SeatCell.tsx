@@ -1,5 +1,6 @@
 import type { Dataset, Employee, Seat } from "../types";
 import { seatState } from "../lib/lookups";
+import { useI18n } from "../lib/i18n";
 
 interface Props {
   seat: Seat;
@@ -23,6 +24,7 @@ function options(ds: Dataset, seat: Seat): { eligible: Employee[]; other: Employ
 }
 
 export default function SeatCell({ seat, ds, assignedId, onChange, locked = false }: Props) {
+  const { t } = useI18n();
   const state = seatState(seat, assignedId);
   const { eligible, other } = options(ds, seat);
 
@@ -37,18 +39,18 @@ export default function SeatCell({ seat, ds, assignedId, onChange, locked = fals
         data-testid={`seat-select-${seat.id}`}
         value={assignedId ?? ""}
         disabled={locked}
-        title={locked ? "Finish requirement changes first, then assign" : undefined}
+        title={locked ? t("finishReqFirst") : undefined}
         onChange={(e) => onChange(seat.id, e.target.value || null)}
       >
-        <option value="">— unfilled —</option>
-        <optgroup label="Eligible">
+        <option value="">{t("unfilledOpt")}</option>
+        <optgroup label={t("eligible")}>
           {eligible.map((e) => (
             <option key={e.id} value={e.id}>
               {e.name}
             </option>
           ))}
         </optgroup>
-        <optgroup label="Exceptional (needs sign-off)">
+        <optgroup label={t("exceptional")}>
           {other.map((e) => (
             <option key={e.id} value={e.id}>
               {e.name}
@@ -56,7 +58,7 @@ export default function SeatCell({ seat, ds, assignedId, onChange, locked = fals
           ))}
         </optgroup>
       </select>
-      {state === "exceptional" && <span className="seat__tag seat__tag--exc">sign-off</span>}
+      {state === "exceptional" && <span className="seat__tag seat__tag--exc">{t("signoffTag")}</span>}
     </div>
   );
 }

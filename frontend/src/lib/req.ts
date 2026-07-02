@@ -13,39 +13,85 @@ export function nextId(prefix: string, existing: string[]): string {
   return id;
 }
 
-export function projectsForTeam(req: RequirementsDoc, teamId: string): ReqProject[] {
-  return req.projects.filter((p) => p.teams.includes(teamId));
+export function projectsForTeam(req: RequirementsDoc, teamId: string | null): ReqProject[] {
+  return teamId == null ? [] : req.projects.filter((p) => p.teams.includes(teamId));
 }
 
-// --- reference checks: an entity referenced elsewhere can't be deleted ------
-
-export function siteReferenced(req: RequirementsDoc, siteId: string): boolean {
-  return req.teams.some((t) => t.site === siteId);
+/** The per-week tick. Absent (docs saved before 2026-07-02) means running. */
+export function runsThisWeek(p: ReqProject): boolean {
+  return p.runs_this_week !== false;
 }
 
-export function roleReferenced(req: RequirementsDoc, roleId: string): boolean {
-  if (req.employees.some((e) => e.roles.includes(roleId))) return true;
-  return req.demand.some((d) => Object.values(d.crew).some((roles) => roleId in roles));
+// --- deletes: always allowed; references become null ("Please choose") -------
+// The user's chosen model (2026-07-02): deleting an entity never blocks and never
+// cascades — single refs turn into a pending choice (null → the editor renders
+// "Please choose", validation says "choose one"), list/keyed refs drop the entry.
+
+const dropCrewEntry = (
+  crew: Record<string, Record<string, number>>,
+  keep: (pid: string, rid: string) => boolean,
+) => {
+  const next: Record<string, Record<string, number>> = {};
+  for (const [pid, roles] of Object.entries(crew)) {
+    const kept = Object.fromEntries(Object.entries(roles).filter(([rid]) => keep(pid, rid)));
+    if (Object.keys(kept).length) next[pid] = kept;
+  }
+  return next;
+};
+
+export function deleteSite(req: RequirementsDoc, siteId: string): RequirementsDoc {
+  return {
+    ...req,
+    sites: req.sites.filter((s) => s.id !== siteId),
+    teams: req.teams.map((t) => (t.site === siteId ? { ...t, site: null } : t)),
+  };
 }
 
-export function shiftTypeReferenced(req: RequirementsDoc, stId: string): boolean {
-  // Demand uses it, OR an employee prefers it (R11) — both make the id load-bearing, so
-  // deletion is blocked while referenced (backend rejects a stale preferred id otherwise).
-  if (req.demand.some((d) => d.shift_type === stId)) return true;
-  return req.employees.some((e) => e.preferred_shift_type_ids.includes(stId));
+export function deleteRole(req: RequirementsDoc, roleId: string): RequirementsDoc {
+  return {
+    ...req,
+    roles: req.roles.filter((r) => r.id !== roleId),
+    employees: req.employees.map((e) =>
+      e.roles.includes(roleId) ? { ...e, roles: e.roles.filter((r) => r !== roleId) } : e),
+    demand: req.demand.map((d) => ({ ...d, crew: dropCrewEntry(d.crew, (_p, rid) => rid !== roleId) })),
+  };
 }
 
-export function teamReferenced(req: RequirementsDoc, teamId: string): boolean {
-  return (
-    req.projects.some((p) => p.teams.includes(teamId)) ||
-    req.employees.some((e) => e.team === teamId) ||
-    req.demand.some((d) => d.team === teamId)
-  );
+export function deleteShiftType(req: RequirementsDoc, stId: string): RequirementsDoc {
+  return {
+    ...req,
+    shift_types: req.shift_types.filter((s) => s.id !== stId),
+    demand: req.demand.map((d) => (d.shift_type === stId ? { ...d, shift_type: null } : d)),
+    employees: req.employees.map((e) =>
+      e.preferred_shift_type_ids.includes(stId)
+        ? { ...e, preferred_shift_type_ids: e.preferred_shift_type_ids.filter((x) => x !== stId) }
+        : e),
+  };
 }
 
-export function projectReferenced(req: RequirementsDoc, projectId: string): boolean {
-  if (req.employees.some((e) => e.projects.includes(projectId))) return true;
-  return req.demand.some((d) => projectId in d.crew);
+export function deleteTeam(req: RequirementsDoc, teamId: string): RequirementsDoc {
+  return {
+    ...req,
+    teams: req.teams.filter((t) => t.id !== teamId),
+    // A project losing its last team keeps an empty list — validation asks for a team.
+    projects: req.projects.map((p) =>
+      p.teams.includes(teamId) ? { ...p, teams: p.teams.filter((x) => x !== teamId) } : p),
+    employees: req.employees.map((e) => (e.team === teamId ? { ...e, team: null } : e)),
+    demand: req.demand.map((d) => (d.team === teamId ? { ...d, team: null } : d)),
+  };
+}
+
+export function deleteProject(req: RequirementsDoc, projectId: string): RequirementsDoc {
+  return {
+    ...req,
+    projects: req.projects.filter((p) => p.id !== projectId),
+    employees: req.employees.map((e) =>
+      e.projects.includes(projectId)
+        ? { ...e, projects: e.projects.filter((x) => x !== projectId) }
+        : e),
+    demand: req.demand.map((d) =>
+      projectId in d.crew ? { ...d, crew: dropCrewEntry(d.crew, (pid) => pid !== projectId) } : d),
+  };
 }
 
 /** Tidy a demand row's crew when its team changes: drop projects not in the team. */
@@ -75,14 +121,25 @@ function defaultDaysForTeam(req: RequirementsDoc, teamId: string): string[] {
   return ordered.length ? ordered : ["Sun"];
 }
 
-/** Set the crew count for (team, shift_type, project, role). 0 removes it. Creates the
- *  demand row if needed (defaulting its days); never deletes a row (an empty-crew row is
- *  a valid manager-only shift, matching the Demand editor). */
+// A (team, shift_type) pair may legitimately appear in SEVERAL demand rows with
+// disjoint day sets (per-day crew variation — the backend rejects only overlapping
+// days). The Project view therefore addresses a row by INDEX; the pair alone is
+// ambiguous. rowIndex is optional so a stepper on a not-yet-materialised requirement
+// can still create the row.
+
+/** Set the crew count for a demand row's (project, role). 0 removes it. When rowIndex is
+ *  null/stale, falls back to the first (team, shift_type) row, creating it if needed
+ *  (defaulting its days); never deletes a row (an empty-crew row is a valid manager-only
+ *  shift, matching the Demand editor). */
 export function setCrewCount(
   req: RequirementsDoc, team: string, shiftType: string, project: string, role: string, n: number,
+  rowIndex?: number,
 ): RequirementsDoc {
   const demand = cloneDemand(req.demand);
-  let row = demand.find((d) => d.team === team && d.shift_type === shiftType);
+  const at = rowIndex != null ? demand[rowIndex] : undefined;
+  let row = at && at.team === team && at.shift_type === shiftType
+    ? at
+    : demand.find((d) => d.team === team && d.shift_type === shiftType);
   if (n > 0) {
     if (!row) {
       row = { team, shift_type: shiftType, days: defaultDaysForTeam(req, team), crew: {} };
@@ -97,13 +154,18 @@ export function setCrewCount(
   return { ...req, demand };
 }
 
-/** Set which days the (team, shift_type) shift runs (shared by every project in that row). */
+/** Set which days a demand row's shift runs (shared by every project in that row).
+ *  Row addressed by index (see above); pair-lookup fallback for a stale/absent index. */
 export function setDemandDays(
   req: RequirementsDoc, team: string, shiftType: string, days: string[],
+  rowIndex?: number,
 ): RequirementsDoc {
   const demand = cloneDemand(req.demand);
   const ordered = DAY_NAMES.filter((d) => days.includes(d));
-  const row = demand.find((d) => d.team === team && d.shift_type === shiftType);
+  const at = rowIndex != null ? demand[rowIndex] : undefined;
+  const row = at && at.team === team && at.shift_type === shiftType
+    ? at
+    : demand.find((d) => d.team === team && d.shift_type === shiftType);
   if (row) row.days = ordered;
   else if (ordered.length) demand.push({ team, shift_type: shiftType, days: ordered, crew: {} });
   return { ...req, demand };

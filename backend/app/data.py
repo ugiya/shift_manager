@@ -239,13 +239,37 @@ def _eligible_managers(employees, team_id, day):
             and day not in e.unavailable_dates]
 
 
+class IdCollisionError(ValueError):
+    """Two distinct demand entries minted the same shift/seat id.
+
+    The dash-concatenated id formats are ambiguous when user ids themselves contain
+    dashes (e.g. a date-shaped substring inside a project id can absorb the shift id's
+    date boundary). validate_requirements catches the common concat collisions early
+    with friendly errors; this check AT THE POINT OF MINTING is the authoritative
+    backstop — no ambiguity slips past a set-membership test on the final ids.
+    """
+
+
 def build_schedule(dataset: Dataset) -> Schedule:
     """Materialise Shifts + Seats (with eligibility) into an unsolved Schedule."""
     st_by_id = {st.id: st for st in dataset.shift_types}
     team_by_id = {t.id: t for t in dataset.teams}
     shifts: dict[str, Shift] = {}
     seats: list[Seat] = []
-    seen_mgr: set[str] = set()
+    seen_seats: set[str] = set()
+
+    def mint(seat_id: str) -> str:
+        # Every seat id must be unique — a duplicate would give Timefold two planning
+        # entities with one PlanningId and make the assignments map ambiguous. Validation
+        # rejects duplicate/overlapping demand up front, so a duplicate reaching here is
+        # an id-concatenation collision, never legitimate reuse.
+        if seat_id in seen_seats:
+            raise IdCollisionError(
+                f"Ids collide: two different demand entries mint the same seat id "
+                f"{seat_id!r}. Rename one of the involved team/shift-type/project/role "
+                f"ids so their dash-joined combination is unambiguous.")
+        seen_seats.add(seat_id)
+        return seat_id
 
     for team_id, st_id, weekdays, crew in dataset.demand:
         st = st_by_id[st_id]
@@ -255,20 +279,25 @@ def build_schedule(dataset: Dataset) -> Schedule:
             if day.weekday() not in weekdays:
                 continue
             shift_id = f"shift-{team_id}-{st_id}-{day.isoformat()}"
-            if shift_id not in shifts:
+            existing = shifts.get(shift_id)
+            if existing is not None and (existing.team_id != team_id or existing.shift_type.id != st_id):
+                # Same minted id from a DIFFERENT (team, shift_type): an id collision —
+                # validation already rejected genuine duplicate/overlapping demand rows.
+                raise IdCollisionError(
+                    f"Ids collide: two different (team, shift type) demand rows mint the "
+                    f"same shift id {shift_id!r}. Rename one of the involved ids so their "
+                    f"dash-joined combination is unambiguous.")
+            if existing is None:
                 shifts[shift_id] = _mk_shift(shift_id, st, day, team_id, team.site_id)
             shift = shifts[shift_id]
-            mgr_seat_id = f"seat-{shift_id}-mgr"
-            if mgr_seat_id not in seen_mgr:
-                seen_mgr.add(mgr_seat_id)
-                seats.append(Seat(
-                    mgr_seat_id, "manager", shift, team_id, None, None,
-                    eligible=_eligible_managers(dataset.employees, team_id, day)))
+            seats.append(Seat(
+                mint(f"seat-{shift_id}-mgr"), "manager", shift, team_id, None, None,
+                eligible=_eligible_managers(dataset.employees, team_id, day)))
             for project_id, role_counts in crew.items():
                 for role_id, count in role_counts.items():
                     for n in range(count):
                         seats.append(Seat(
-                            f"seat-{shift_id}-{project_id}-{role_id}-{n}",
+                            mint(f"seat-{shift_id}-{project_id}-{role_id}-{n}"),
                             "worker", shift, team_id, project_id, role_id,
                             eligible=_eligible_workers(dataset.employees, project_id, role_id, team_id, day)))
 

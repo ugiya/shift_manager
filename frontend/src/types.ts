@@ -50,6 +50,7 @@ export interface Dataset {
   sites: NamedRef[];
   week_start: string;
   days: string[];
+  weekend_weekdays: number[]; // Mon=0..Sun=6 — the weekend per backend config (drives shading)
   roles: NamedRef[];
   teams: Team[];
   projects: Project[];
@@ -100,12 +101,17 @@ export interface SolveResult {
 export interface ReqSite { id: string; name: string }
 export interface ReqRole { id: string; name: string }
 export interface ReqShiftType { id: string; name: string; start: number; end: number; is_night: boolean }
-export interface ReqTeam { id: string; name: string; site: string }
-export interface ReqProject { id: string; name: string; teams: string[] } // ADR-0003: one-or-more teams
+// A `null` ref = its target was deleted in the editor ("Please choose" pending);
+// the backend blocks with a clear "choose one" error until re-picked.
+export interface ReqTeam { id: string; name: string; site: string | null }
+// ADR-0003: one-or-more teams. `runs_this_week` is the per-week tick: unticked, the
+// project stays in the org but materialises no seats this week. Optional because
+// docs saved before 2026-07-02 lack it; absent means true.
+export interface ReqProject { id: string; name: string; teams: string[]; runs_this_week?: boolean }
 export interface ReqEmployee {
   id: string;
   name: string;
-  team: string;
+  team: string | null;
   roles: string[];
   projects: string[];
   can_manage: boolean;
@@ -126,8 +132,8 @@ export interface ReqEmployee {
   preferred_shift_type_ids: string[]; // preferred shift TYPES (Phase 4, R11); unmet ⇒ soft penalty
 }
 export interface ReqDemand {
-  team: string;
-  shift_type: string;
+  team: string | null;
+  shift_type: string | null;
   days: string[];
   crew: Record<string, Record<string, number>>; // project -> role -> count
 }

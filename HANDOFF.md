@@ -1,15 +1,121 @@
 # Handoff — resume point (read CLAUDE.md → DATA_MODEL.md → this file)
 
 **Repo:** `/Users/uri/projects/adili/shift_manager`.
-**Baseline:** branch **`feat/employee-features-and-views`**, pushed to
-**origin = github.com/ugiya/shift_manager** (private). The Phase 1–2 WIP checkpoint is
-commit `9815d9d` (base `main` @ `c446a65`). `git diff main` shows all feature work so
-far; commit new (Phase 3+) work on top of this branch. (Use `git log`/branch refs, not a
-hardcoded tip SHA — it moves as you commit.)
+**Baseline:** branch **`fix/code-review-findings`** (on top of the committed
+`feat/employee-features-and-views` history), origin = github.com/ugiya/shift_manager
+(private). Everything below the Round 3 block is committed history context; Round 3
+itself is **uncommitted** on this branch.
 The data model is authoritative in `docs/DATA_MODEL.md` (+ `CONTEXT.md`, `docs/adr/`) —
 those win over any memory; re-read before acting.
 
-## ⏭️ CURRENT WORK — Round 2: UI tweaks (DONE — verified + codex'd; uncommitted)
+## ⏭️ CURRENT WORK — Round 4: week navigation + editor rework (2026-07-02, uncommitted)
+
+> **STATUS: DONE + verified.** Backend **973 passed** · full e2e **109 passed** · build +
+> `typecheck:e2e` clean · visual pass (Brave screenshots: fresh current week, month-change
+> headers, stale dialog, tabs+filters, RTL, print) all good. Codex (gpt-5.5 xhigh):
+> CHANGES-NEEDED (6 findings) → all fixed → re-review **APPROVE**. Nothing committed —
+> commit when the user asks.
+> Locked user decisions (do NOT re-ask): fresh start = current week; stale restored
+> session = ASK on load (dialog); full week picker (snap to Sunday); deletes = **null-out**
+> ("Please choose", never block/cascade); per-week project **tick** decides what runs this
+> week; editor = 3 tabs (Organization | Employee Preferences (team filter) | Project
+> Requirements (project filter + ticks)).
+>
+> **Codex round-4 findings → fixes (all landed):** (1) paused-only demand rows now skip
+> the duplicate/overlap/concat checks and `_estimated_seats` counts effective crew only
+> (`_effective_demand` returns row indices; re-tick re-fires validation — tested);
+> (2) stale-week **Jump is gated on `dirty`** (a restored unsaved draft would be silently
+> discarded — same rule as the picker; e2e-pinned); (3) malformed `week_start` can't crash
+> the render (persist.ts shape-check + non-throwing date formatters); (4) fetch failures
+> are a dedicated `api.ts ServerUnreachableError` (a client-side TypeError is never
+> mislabelled "server unreachable"); (5) `e2e/global-setup.ts` fails fast when a stale
+> unpinned uvicorn on :8000 would be reused; (6) a non-Sunday `SEED_WEEK_START` raises.
+
+**A. Current-week fresh start:** `GET /api/requirements` re-dates the seed to the Sunday
+on or before today (`main.current_week_start`, local-naive). `SEED_WEEK_START` env pins it
+— set to `2026-06-21` in `playwright.config.ts` (e2e seat ids embed dates). Unit tests
+pin Sunday-snap + the pin + the invalid-pin error.
+
+**B. Week UX (frontend):** stale-week **ask-on-load dialog** (`stale-week-dialog/-stay/-jump`
+testids; only for RESTORED sessions, fresh starts never ask); topbar **week picker**
+(`week-picker`, snaps any picked date to Sunday via `lib/dates.ts weekStartOf`; gated
+while dirty/building/solving; commits through `handleRequirementsChange` so score resets
++ mismatched carry-over seed drops). Date display: week range with year via
+`Intl.formatRange` in `<bdi>`; grid day headers show month on col 1 + month change and a
+full-date tooltip (`dayHeader` gained `mon`/`monthStart` + locale); print title formatted.
+e2e: `session.spec.ts` uses `page.clock.setFixedTime` (backend pinned + clock faked keeps
+the dialog deterministic) + polls localStorage for the autosaved week before reloading
+(fixed-sleep was racy — the save debounce restarts on rebuild churn).
+
+**C. Editor rework (user-reported, clarified 2026-07-02):**
+- **Null-out deletes**: delete always enabled; single refs → `null` ("Please choose",
+  `.in--pending` warn styling, backend "choose one" blocking errors — `TeamIn.site`,
+  `EmployeeIn.team`, `DemandIn.team/shift_type` now `str|None`); list/keyed refs (roles,
+  projects, preferred types, crew entries) drop the entry. Helpers in `lib/req.ts`
+  (`deleteSite/Role/ShiftType/Team/Project`); the old `*Referenced` gates are GONE.
+- **Per-week tick**: `ProjectIn.runs_this_week=True`; `_effective_demand` (shared by
+  `to_dataset` + coverage warnings) drops paused crew; row emptied by pausing doesn't run
+  at all; authored empty-crew row stays manager-only. Paused projects hidden from employee
+  chips; "(not this week)" badges in Project view + crew chunks.
+- **Tabs**: Organization | Employee Preferences (`employee-team-filter`) | Project
+  Requirements (`project-filter` narrows rows AND crew chunks; `project-thisweek` ticks).
+- **"Failed to fetch"**: could NOT be reproduced server-side (hostile-input sweep: zero
+  demand/employees/eligibles, dangling refs — all clean; `tests/test_week_scoping.py`
+  pins them). Root cause = backend unreachable (user runs uvicorn manually). Fetch
+  rejections now surface as a friendly i18n'd "server unreachable, session saved locally"
+  message (`App.fatalOf`).
+
+Docs updated: DATA_MODEL §3 (week default, nullable refs, runs_this_week) + §7 (week
+navigation, editor tabs). New tests: `backend/tests/test_week_scoping.py` (12),
+week/pin tests in `test_api.py` (4), e2e stale-week/picker in `session.spec.ts` (4) +
+rewritten `editor.spec.ts` (tabs/filters/deletes/tick). Remaining when resuming: full
+e2e confirmation, visual pass, consult-codex round, commit when the user asks.
+
+---
+
+## Round 3: features + review fixes (2026-07-01/02, uncommitted)
+
+> **STATUS:** All features + fixes implemented; backend and full-e2e suites re-running at
+> handoff time after the codex round (previously: backend **953+1 passed**, new-feature
+> e2e specs all green individually). Remaining: graphics polish (user asked to "improve
+> graphics"), final full-suite confirmation, commit when the user asks.
+
+**Features shipped (user-picked):** localStorage **autosave/restore** of the whole session
+(`lib/persist.ts`; restore re-validates, never trusts a stored score) + "Reset to seed"
+(two-step confirm); **undo/redo** for assignment overrides (⌘Z/⇧⌘Z, snapshot stacks,
+re-baselined on rebuild/solve/carry, gated to the schedule view and off during solve);
+**Workload tab** in the side panel (`lib/workload.ts` — burden counted PER SEAT to match
+R9/carry-over; shifts/nights/weekends per distinct shift); **print view** (`PrintSchedule`,
+`@media print`) + **schedule CSV** (`lib/scheduleExport.ts`, one row per seat incl.
+UNFILLED); **Hebrew/RTL i18n** (`lib/i18n.tsx`, EN strings byte-identical to the old
+literals so e2e text assertions hold; `data-testid="lang-toggle"`; ErrorBoundary reads the
+persisted lang directly — crash path can't rely on context). New e2e: `session.spec.ts`,
+`features.spec.ts`, `i18n.spec.ts`.
+
+**Bug fixes from a 3-agent review + codex (gpt-5.5 xhigh) round — all landed:**
+- Backend: CSV partial-column upsert now patches only carried columns; csv.field_size_limit
+  + csv.Error as parse errors; **composite-id collisions** — concat checks in
+  `validate_requirements` PLUS the authoritative mint-time uniqueness backstop
+  (`data.IdCollisionError` raised in `build_schedule`, caught in `main._materialize` →
+  normal error; pinned by the date-splice test in `test_api.py`); duplicate-demand
+  rejection **narrowed to overlapping days** (per-day crew variation is legal again per
+  CONTEXT.md — DATA_MODEL §2 rewritten); R9 flag ids unique per team; R9 overflow clamp
+  (`FAIRNESS_SQUARE_CAP`); 411 for POSTs without Content-Length; solver-factory cache
+  maxsize 8; `weekend_weekdays` in the dataset payload (frontend shading follows config).
+- Frontend: stale carry-over seed reconciliation (dropped on week change + on import;
+  removable via topbar × with synchronous invalidation); editor shows the SEED's carry-over
+  values (disabled) for seeded employees; atomic reset-to-seed (fetch before destroy);
+  assignment editing locked during solve in all views; employee team-change keeps
+  still-valid cross-team projects; ProjectView edits demand rows **by index** (same-pair
+  disjoint-day rows render as separate groups; `setCrewCount`/`setDemandDays` take
+  `rowIndex`); hardened `loadSession` shape checks; backend error detail surfaced in api.ts.
+
+**Env note:** the claude-in-chrome MCP disconnected mid-session; the browser-verification
+step was covered by Playwright (drives Brave) instead.
+
+---
+
+## Round 2: UI tweaks (DONE — verified + codex'd; committed in 7579dbf)
 
 > **STATUS:** All five tweaks DONE + verified + consult-codex'd. Verification: frontend build
 > + e2e typecheck clean; **full e2e 87 passed**; backend **937 passed** (no backend changes
@@ -224,6 +330,8 @@ Decisions already made (do NOT re-ask the user):
   `cd frontend && JAVA_HOME=… npx playwright test` (drives Brave; Playwright starts the backend).
   ⚠️ **Kill any stale `uvicorn` on :8000 before e2e** (`lsof -ti tcp:8000 | xargs kill`) — it
   gets reused (`reuseExistingServer`) and may serve OLD backend code, causing phantom failures.
+  ⚠️ **Run the e2e suite solo** — running backend pytest (a second JVM) concurrently starves
+  the solver and flakes the timing-sensitive solve assertions.
 - consult-codex: `python3 ~/.claude/skills/consult-codex/scripts/ask_codex.py --cd <repo>
   --effort xhigh --timeout 600 --file <prompt.md>`. ⚠️ Build the prompt file with
   `printf`/`cat`, NOT inline backticks in a heredoc (the shell runs them as substitution).

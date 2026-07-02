@@ -7,13 +7,43 @@ import type {
   ValidateResponse,
 } from "./types";
 
+// fetch() itself rejects ONLY on network-level failures (server down, connection
+// refused/reset) — never on HTTP error statuses. Wrapping just that rejection gives the
+// app a precise "backend unreachable" signal; anything else (bad status, shape drift,
+// client bugs) keeps its real error and is never mislabelled.
+export class ServerUnreachableError extends Error {
+  constructor(cause: unknown) {
+    super(String(cause));
+    this.name = "ServerUnreachableError";
+  }
+}
+
+async function reach(url: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (e) {
+    throw new ServerUnreachableError(e);
+  }
+}
+
 async function json<T>(res: Response): Promise<T> {
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    // Surface the backend's structured detail (e.g. "Request body too large") instead
+    // of a bare status code — it's what the user needs to act on.
+    const body = await res.text().catch(() => "");
+    let detail = "";
+    try {
+      detail = String(JSON.parse(body)?.detail ?? "");
+    } catch {
+      detail = body.slice(0, 200);
+    }
+    throw new Error(`${res.status} ${res.statusText}${detail ? ` — ${detail}` : ""}`);
+  }
   return res.json() as Promise<T>;
 }
 
 function post<T>(url: string, body: unknown): Promise<T> {
-  return fetch(url, {
+  return reach(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -21,7 +51,7 @@ function post<T>(url: string, body: unknown): Promise<T> {
 }
 
 export function getRequirements(): Promise<RequirementsDoc> {
-  return fetch("/api/requirements").then((r) => json<RequirementsDoc>(r));
+  return reach("/api/requirements").then((r) => json<RequirementsDoc>(r));
 }
 
 // `carryoverSeed` (optional): a prior week's next_carryover envelope, replayed to

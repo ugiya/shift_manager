@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from .analysis import seat_label, shift_label
+from .config import WEEKEND_WEEKDAYS
 from .data import Dataset, build_lookup, build_schedule
 from .domain import Schedule, Seat
 
@@ -13,6 +14,9 @@ def dataset_payload(dataset: Dataset, schedule: Schedule) -> dict:
         "sites": [{"id": s.id, "name": s.name} for s in dataset.sites],
         "week_start": dataset.week_start.isoformat(),
         "days": [d for d in _week_days(dataset)],
+        # Which Python weekday() ints count as weekend ([4, 5] = Fri/Sat by default),
+        # so the UI can mark weekend columns without hardcoding the config.
+        "weekend_weekdays": sorted(WEEKEND_WEEKDAYS),
         "roles": [{"id": r.id, "name": r.name} for r in dataset.roles],
         "teams": [{"id": t.id, "name": t.name, "site_id": t.site_id} for t in dataset.teams],
         "projects": [{"id": p.id, "name": p.name, "team_ids": sorted(p.team_ids)} for p in dataset.projects],
@@ -121,7 +125,7 @@ def apply_assignments(schedule: Schedule, assignments: dict[str, str | None],
     """
     for seat in schedule.seats:
         emp_id = assignments.get(seat.id)
-        seat.employee = employees_by_id.get(emp_id) if emp_id else None
+        seat.employee = employees_by_id.get(emp_id) if emp_id is not None else None
     return schedule
 
 

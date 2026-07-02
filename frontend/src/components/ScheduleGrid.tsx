@@ -1,5 +1,8 @@
+import { useMemo } from "react";
 import type { Assignments, Dataset, Team } from "../types";
 import { buildLookups, dayHeader, findShift, shiftTypesForTeam } from "../lib/lookups";
+import { fmtFull } from "../lib/dates";
+import { useI18n } from "../lib/i18n";
 import SeatCell from "./SeatCell";
 
 interface Props {
@@ -8,15 +11,17 @@ interface Props {
   assignments: Assignments;
   onChange: (seatId: string, employeeId: string | null) => void;
   locked?: boolean;
+  dirty?: boolean;
 }
 
-export default function ScheduleGrid({ ds, teams, assignments, onChange, locked = false }: Props) {
-  const lk = buildLookups(ds);
+export default function ScheduleGrid({ ds, teams, assignments, onChange, locked = false, dirty = false }: Props) {
+  const { t } = useI18n();
+  const lk = useMemo(() => buildLookups(ds), [ds]);
   return (
     <div className="schedule">
       {locked && (
         <div className="banner banner--warn" data-testid="site-locked" role="status">
-          Requirement changes pending — Save or Discard them (in Requirements or Project) to edit assignments here.
+          {dirty ? t("lockedDirty") : t("lockedWorking")}
         </div>
       )}
       {teams.map((team) => (
@@ -41,6 +46,7 @@ function TeamGrid({
   onChange: (seatId: string, employeeId: string | null) => void;
   locked: boolean;
 }) {
+  const { t, lang, weekdayNames } = useI18n();
   const types = shiftTypesForTeam(ds, team.id, lk);
   return (
     <section className="team" data-testid="team-section" data-team-id={team.id}>
@@ -52,13 +58,15 @@ function TeamGrid({
         >
           {/* header row */}
           <div className="grid__corner" />
-          {ds.days.map((d) => {
-            const h = dayHeader(d);
+          {ds.days.map((d, i) => {
+            const h = dayHeader(d, ds.weekend_weekdays, weekdayNames, lang === "he" ? "he-IL" : undefined);
             return (
-              <div key={d} className={`grid__dayhdr${h.weekend ? " is-weekend" : ""}`}>
+              <div key={d} className={`grid__dayhdr${h.weekend ? " is-weekend" : ""}`}
+                title={fmtFull(d, lang)}>
                 <span className="grid__dayname">{h.name}</span>
-                <span className="grid__daydom">{h.dom}</span>
-                {h.weekend && <span className="grid__wkend">weekend</span>}
+                {/* the month shows where it orients: the first column and a month change */}
+                <span className="grid__daydom">{h.dom}{(i === 0 || h.monthStart) ? ` ${h.mon}` : ""}</span>
+                {h.weekend && <span className="grid__wkend">{t("weekend")}</span>}
               </div>
             );
           })}
@@ -105,12 +113,13 @@ function RowFragment({
   onChange: (seatId: string, employeeId: string | null) => void;
   locked: boolean;
 }) {
+  const { weekdayNames } = useI18n();
   return (
     <>
       <div className={`grid__rowhdr${isNight ? " is-night" : ""}`}>{stName}</div>
       {ds.days.map((d) => {
         const shift = findShift(ds, team.id, stId, d);
-        const cellWeekend = dayHeader(d).weekend;
+        const cellWeekend = dayHeader(d, ds.weekend_weekdays, weekdayNames).weekend;
         if (!shift) {
           return <div key={d} className={`cell cell--empty${cellWeekend ? " is-weekend" : ""}`}>·</div>;
         }

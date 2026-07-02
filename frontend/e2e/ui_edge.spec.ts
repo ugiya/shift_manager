@@ -79,8 +79,11 @@ test("re-solving after manual overrides restores a full, feasible schedule", asy
   await page.getByTestId(`seat-select-${ALPHA_SUN_QA}`).selectOption(""); // break it
   await expect(page.getByTestId("score-badge")).toHaveAttribute("data-filled", "134");
   await page.getByTestId("solve-button").click(); // re-solve
+  // The badge is ALREADY feasible=true here (an unfilled seat is medium-level coverage,
+  // not a hard violation), so data-filled is the only signal that the re-solve response
+  // landed — give it the full solve budget, not the 5s default (it flakes under load).
+  await expect(page.getByTestId("score-badge")).toHaveAttribute("data-filled", "135", { timeout: 40000 });
   await expect(page.getByTestId("score-badge")).toHaveAttribute("data-feasible", "true");
-  await expect(page.getByTestId("score-badge")).toHaveAttribute("data-filled", "135");
 });
 
 test("the flags panel lists compromises after solving", async ({ page }) => {

@@ -72,7 +72,16 @@ staffing a cross-site project's seat from another site, or assigning someone on 
 unavailable date — is an **Exceptional Assignment** (see §4).
 
 Stable id formats: shift `shift-{team}-{shiftType}-{date}`; manager seat
-`seat-{shift_id}-mgr`; worker seat `seat-{shift_id}-{project}-{role}-{n}`.
+`seat-{shift_id}-mgr`; worker seat `seat-{shift_id}-{project}-{role}-{n}`. A concrete
+`(team, shift_type, day)` shift must be defined by a **single** demand row: duplicate
+`(team, shift_type)` pairs across rows are allowed as long as their day sets are
+**disjoint** (crew composition can vary by day, per CONTEXT.md); a shared day is rejected
+by validation (one shift with two defining rows means colliding seat ids when the crews
+share a `(project, role)`, ambiguous demand otherwise). And because the ids concatenate
+their parts with `-`, validation also rejects two *different* `(team, shift_type)` pairs —
+or, within one row, two different `(project, role)` crew entries — whose concatenation
+produces the same id string (e.g. teams `t`+`t-a` with shift types `a-b`+`b` both mint
+`shift-t-a-b-{date}`).
 
 ---
 
@@ -85,10 +94,32 @@ field names (e.g. `ShiftTypeIn.start/end`, `TeamIn.site`, `ProjectIn.teams`).
 
 - **DemandIn** (`:80`) — `team, shift_type, days: [weekday names], crew: {project: {role: count}}`.
   Demand is **exact**: each required position is one seat; an unfilled seat is
-  understaffing (a Compromise). `week_start` defaults to the seed week.
+  understaffing (a Compromise). `week_start` defaults to the seed week
+  (`Dataset.week_start`) in validation/materialisation, but `GET /api/requirements`
+  overrides it to the **current week** — the Sunday on or before today, local-naive
+  (`main.current_week_start`) — so a fresh session schedules *this* week, not the week
+  the seed data was written for. The seed's demand is by weekday name, so the org
+  re-dates cleanly. `SEED_WEEK_START` (env) pins the answer for deterministic tests;
+  e2e pins `2026-06-21` because seat ids embed the week's dates.
 - **Carry-over shape is single-sourced** as `CarryoverFields` (`:87`) — the four fields
   `{carryover_burden, worked_last_weekend, prev_shift_end, prev_shift_was_night}`. A
   contract test pins `EmployeeIn`, the seed output, and the frontend types against it.
+- **Nullable single refs (2026-07-02 "null-out deletes")**: `TeamIn.site`,
+  `EmployeeIn.team`, `DemandIn.team`, `DemandIn.shift_type` are `str | None`. Deleting an
+  entity in the editor never blocks and never cascades: single references to it become
+  `None` (rendered as a "Please choose" pending select), list/keyed references (employee
+  roles/projects, project teams, preferred types, crew entries) just drop the entry. A
+  `None` ref is a **blocking validation error** with an actionable message ("Team 'X' has
+  no site — choose one."), and the shift-identity (duplicate/concat) checks skip rows with
+  a pending pair. `to_dataset` only runs on validated docs, so `None` never reaches the
+  domain layer.
+- **Per-week project tick**: `ProjectIn.runs_this_week: bool = True`. Unticked, the
+  project stays fully in the org (memberships, demand rows, export) but
+  `_effective_demand` — shared by `to_dataset` AND the coverage warnings — drops its crew
+  for the week: no seats materialise, no warnings fire. A demand row whose *entire* crew
+  is paused doesn't run at all (not even its manager seat); an **authored** empty-crew row
+  is still a deliberate manager-only shift. JSON export/import round-trips the tick; the
+  employee-preferences UI hides paused projects' chips.
 - **HR metadata** on `EmployeeIn` (round-trip only): `status` (`active`|`on-leave`|`inactive`),
   `employee_number, email, phone, hire_date, notes`. Only `status == "active"` employees are
   materialised by `to_dataset` and counted in coverage warnings; inactive/on-leave people
@@ -223,8 +254,10 @@ rejected. The merged document is validated through the normal `validate_requirem
 so the editor can surface them. An oversized upload is rejected before parsing.
 
 `dataset_payload` (`serialize.py:9`) carries everything the UI needs to render ANY view
-without more backend work: `sites, week_start, days[7], roles, teams, projects,
-shift_types, employees, shifts (with team_id/site_id/date/is_night/is_weekend), seats
+without more backend work: `sites, week_start, days[7], weekend_weekdays (the Python
+weekday() ints that count as weekend — [4, 5] = Fri/Sat with default config), roles,
+teams, projects, shift_types, employees, shifts (with
+team_id/site_id/date/is_night/is_weekend), seats
 (with team_id/project_id/role_id/label/eligible_employee_ids)`, plus `assignments`
 `{seat_id: employee_id|null}`. The frontend mirror of all these shapes is
 `frontend/src/types.ts` — **keep it in sync**.
@@ -248,10 +281,52 @@ The editor (and the Project view's requirement controls) edit a **local draft** 
 field edits do not rebuild or re-validate until the user clicks **Save** (Discard reverts; an
 import / carry-forward / initial load resyncs the draft). Solve and Carry are gated while
 there are unsaved edits, so a stale doc can't be solved. **Assignment editing is also paused
-in every view while requirement edits are unsaved (or a rebuild is in flight)** — the Save
-rebuild resets assignments, so editing one first would silently lose it. This is a
-UI-interaction concern only — it does not change the data model, the scoring levels, or the
-carry-over contract.
+in every view while requirement edits are unsaved, a rebuild is in flight, or a solve is
+running** — the Save rebuild resets assignments (and a mid-solve edit would silently discard
+the solve), so editing then would lose work. This is a UI-interaction concern only — it does
+not change the data model, the scoring levels, or the carry-over contract.
+
+**Client-side session & conveniences (Round 3, frontend-only — no data-model change):**
+- **Autosave/restore** (`frontend/src/lib/persist.ts`): the whole working session — committed
+  doc, unsaved draft, assignments, the applied carry-over seed, and UI position — persists to
+  localStorage (debounced) and is restored on load; restored assignments are filtered to
+  still-existing seats/employees and **re-validated against the backend** (score/flags/seed
+  are never trusted from storage — the scoring authority stays Timefold). "Reset to seed" (in
+  the editor, two-step confirm) fetches the server seed first, then discards the session.
+  Known limitation: one localStorage key — two tabs are last-writer-wins.
+- **Seed lifecycle**: an applied carry-over seed is dropped automatically when the committed
+  doc's week no longer matches its `target_week_start` (week edit / import of another week),
+  and always on an **import** (the imported doc's own carry-over fields are the new truth).
+  The topbar "seeded" tag has a **×** to remove the seed manually. In the editor, employees a
+  seed covers show the **seed's** carry-over values, disabled (the doc's own values are not
+  what the solve uses).
+- **Undo/redo** for assignment overrides (snapshot stack, ⌘Z/⇧⌘Z + buttons); history
+  re-baselines (clears) on rebuild, solve and carry-forward.
+- **Week navigation** (2026-07-02): the topbar has a **week picker** — any picked date
+  snaps to its week's **Sunday** (`lib/dates.ts weekStartOf`; a mid-week start would skew
+  the 7-day grid against the weekday-name demand model). Changing week is a *requirements*
+  edit: it commits through the normal change path (score resets, rebuild, week-mismatched
+  seed dropped) and is gated while `dirty || building || solving`. On load, a **restored**
+  session whose week is strictly before today's week gets an **ask-on-load dialog** —
+  "Stay on {old week}" vs "Start current week" (jump = the same requirements edit). Fresh
+  starts never ask: the server already hands out the current week (§3). The frontend
+  mirrors the backend's Sunday rule in one helper (`currentWeekStart`).
+- **Workload tab** (side panel): per-employee shifts / nights / weekend shifts and cumulative
+  burden (carry-over + this week's night-or-weekend shifts — same `is_burden` notion as §2)
+  vs the team average. Derived from payload + assignments; display only.
+- **Schedule export**: a print-only rendering of the whole week (browser Print/PDF) and a
+  **schedule CSV** (one row per seat incl. UNFILLED; distinct from the Phase-5 requirements
+  CSV, which round-trips the org document).
+- **i18n**: English/Hebrew UI chrome with RTL (`frontend/src/lib/i18n.tsx`); weekend shading
+  everywhere derives from the payload's `weekend_weekdays` (backend config), not a hardcoded
+  Fri/Sat. Backend-generated flag prose stays English.
+- **Editor layout (2026-07-02)**: three tabs — **Organization** (sites, roles, shift types,
+  teams, projects), **Employee Preferences** (the employee roster, filterable by team — a
+  team lead's view), **Project Requirements** (the per-week "Working this week" project
+  ticks + demand, filterable by project — a project lead's view; the filter also narrows
+  each row's crew chunks to that project). One draft/Save bar and one issues panel span all
+  tabs. Deletes follow the null-out model (§3); an unreachable backend surfaces as a
+  friendly "server unreachable, session saved locally" message, not a raw fetch error.
 
 ---
 

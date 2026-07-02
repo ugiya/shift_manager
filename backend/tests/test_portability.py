@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.portability import (EMPLOYEE_CSV_COLUMNS, ImportMode, export,
                              import_document, requirements_to_csv)
-from app.requirements import RequirementsIn
+from app.requirements import RequirementsIn, validate_requirements
 
 ORG = {
     "sites": [{"id": "hq", "name": "HQ"}],
@@ -144,6 +144,42 @@ def test_upsert_by_id_updates_existing_and_keeps_others():
     assert "evan" in by_id                                       # untouched, kept
 
 
+def test_upsert_blank_id_does_not_overwrite_unrelated_employee():
+    """A new hire with a blank id whose name slugs to an id already used by an UNRELATED
+    existing employee must be ADDED, not silently merged over that employee (regression:
+    used_ids omitted existing employee ids, so `emp-dana` collided and upsert overwrote)."""
+    doc = copy.deepcopy(ORG)
+    doc["employees"] = [
+        {"id": "emp-dana", "name": "Dana", "team": "a", "roles": ["dev"], "projects": ["p"],
+         "can_manage": True, "status": "active", "email": "original@x.com"},
+    ]
+    merged, errors, _ = import_document(
+        RequirementsIn(**doc), _csv([_row(id="", name="Dana", email="new@x.com")]),
+        "csv", ImportMode.UPSERT_ID)
+    assert errors == []
+    by_id = {e["id"]: e for e in merged["employees"]}
+    assert by_id["emp-dana"]["email"] == "original@x.com"          # existing record untouched
+    assert len(merged["employees"]) == 2                           # new hire added, not merged over
+    new = [e for e in merged["employees"] if e["id"] != "emp-dana"]
+    assert len(new) == 1 and new[0]["email"] == "new@x.com"        # got a fresh, distinct id
+
+
+def test_replace_blank_id_reuses_discarded_ids_stably():
+    """REPLACE discards existing employees, so a blank-id row is free to reuse their ids —
+    keeping the slug stable/idempotent across repeated imports (guards against unioning
+    existing ids into used_ids for REPLACE, which would mint `emp-dana-2` and flip on re-import)."""
+    doc = copy.deepcopy(ORG)
+    doc["employees"] = [
+        {"id": "emp-dana", "name": "Dana", "team": "a", "roles": ["dev"], "projects": ["p"]},
+    ]
+    csv = _csv([_row(id="", name="Dana")])
+    merged, errors, _ = import_document(RequirementsIn(**doc), csv, "csv", ImportMode.REPLACE)
+    assert errors == []
+    assert [e["id"] for e in merged["employees"]] == ["emp-dana"]  # reused, not emp-dana-2
+    merged2, errors2, _ = import_document(RequirementsIn(**merged), csv, "csv", ImportMode.REPLACE)
+    assert errors2 == [] and [e["id"] for e in merged2["employees"]] == ["emp-dana"]  # idempotent
+
+
 def test_upsert_by_name_matches_on_name():
     merged, errors, _ = import_document(
         base(), _csv([_row(id="newid", name="Dana", can_manage="true")]), "csv", ImportMode.UPSERT_NAME)
@@ -175,6 +211,77 @@ def test_csv_without_id_or_name_header_is_an_error():
     merged, errors, _ = import_document(base(), "foo,bar\n1,2\n", "csv", ImportMode.REPLACE)
     assert any("header" in e for e in errors)
     assert merged == base().model_dump()
+
+
+# --- partial-column CSVs (the file only patches the fields it carries) --------
+
+def _partial_csv(header: list[str], rows: list[list[str]]) -> str:
+    return ",".join(header) + "\n" + "\n".join(",".join(r) for r in rows) + "\n"
+
+
+def test_partial_csv_upsert_patches_only_carried_columns():
+    """A column absent from the header must not reset a matched employee's field to a
+    default on upsert — DATA_MODEL §7: the CSV only patches the fields it carries."""
+    merged, errors, _ = import_document(
+        base(), _partial_csv(["id", "name", "status"], [["dana", "Dana", "on-leave"]]),
+        "csv", ImportMode.UPSERT_ID)
+    assert errors == []
+    dana = next(e for e in merged["employees"] if e["id"] == "dana")
+    assert dana["status"] == "on-leave"                        # carried column applied
+    assert dana["team"] == "a" and dana["roles"] == ["dev"]    # absent columns untouched
+    assert dana["projects"] == ["p"] and dana["can_manage"] is True
+    assert dana["preferred_shift_type_ids"] == ["m"]
+    assert dana["unavailable_dates"] == ["2026-06-22"]
+    assert dana["email"] == "dana@x.com"
+
+
+def test_partial_csv_upsert_without_status_does_not_reactivate():
+    """An omitted status column must not flip an on-leave employee back to 'active'
+    (the old code materialised every field per row, defaulting status)."""
+    merged, errors, _ = import_document(
+        base(), _partial_csv(["id", "name"], [["evan", "Evan Renamed"]]),
+        "csv", ImportMode.UPSERT_ID)
+    assert errors == []
+    evan = next(e for e in merged["employees"] if e["id"] == "evan")
+    assert evan["name"] == "Evan Renamed"
+    assert evan["status"] == "on-leave"                        # NOT re-activated
+
+
+def test_partial_csv_replace_defaults_absent_columns():
+    """Replace-mode rows from a partial file get defaults for the absent columns and go
+    through normal validation (an empty team is a validation error, not a crash)."""
+    merged, errors, _ = import_document(
+        base(), _partial_csv(["id", "name"], [["zoe", "Zoe"]]), "csv", ImportMode.REPLACE)
+    assert errors == []                                        # parses cleanly
+    zoe = next(e for e in merged["employees"] if e["id"] == "zoe")
+    assert zoe["team"] == "" and zoe["roles"] == [] and zoe["status"] == "active"
+    assert zoe["carryover_burden"] == 0 and zoe["avoid_shift_ids"] == []
+    v_errors, _ = validate_requirements(RequirementsIn(**merged))  # shape-valid, no crash
+    assert any("unknown team ''" in e for e in v_errors)
+
+
+# --- csv module edge cases -----------------------------------------------------
+
+def test_csv_round_trips_a_long_notes_field(client):
+    """A legally-exported `notes` can exceed csv's default 128 KiB per-field limit; the
+    import must parse it (the real bound is MAX_IMPORT_BYTES), never 500."""
+    doc = copy.deepcopy(ORG)
+    doc["employees"][0]["notes"] = "n" * 200_000
+    exported = client.post("/api/export", json={"requirements": doc, "format": "csv"}).json()
+    assert exported["errors"] == []
+    r = client.post("/api/import", json={"requirements": doc, "format": "csv",
+                                         "mode": "replace", "content": exported["content"]}).json()
+    assert r["errors"] == []
+    dana = next(e for e in r["requirements"]["employees"] if e["id"] == "dana")
+    assert dana["notes"] == "n" * 200_000
+
+
+def test_malformed_csv_is_a_parse_error_not_an_exception():
+    """Input that trips csv.Error (here a bare carriage return in an unquoted field)
+    comes back as a normal parse error per the endpoint contract, never an exception."""
+    merged, errors, _ = import_document(base(), "id,name\nx,a\rb\n", "csv", ImportMode.REPLACE)
+    assert any("Invalid CSV" in e for e in errors)
+    assert merged == base().model_dump()                       # base unchanged
 
 
 # --- endpoints ---------------------------------------------------------------

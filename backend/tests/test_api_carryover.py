@@ -205,6 +205,19 @@ def test_infeasible_source_seed_warns(client):
     assert any("infeasible schedule" in w for w in r["warnings"]), r["warnings"]
 
 
+def test_empty_infeasible_seed_does_not_warn(client):
+    """An empty seed carries no data, so a source_feasible=False flag on it must not
+    produce a spurious 'infeasible schedule' warning (#9) — this is the exact shape of
+    empty_carryover_seed() replayed back by a client."""
+    doc = copy.deepcopy(WEEKEND_ORG)
+    doc["week_start"] = "2026-06-28"
+    seed = {"source_week_start": None, "target_week_start": None,
+            "source_feasible": False, "employees": {}}
+    r = client.post("/api/build", json={"requirements": doc, "carryover_seed": seed}).json()
+    assert r["dataset"] is not None, r["errors"]
+    assert not any("infeasible schedule" in w for w in r["warnings"]), r["warnings"]
+
+
 def test_solve_response_includes_next_carryover(client):
     """The seam is exposed on /api/solve too, with one entry per employee."""
     r = client.post("/api/solve", json={"requirements": ORG, "seconds": 1}).json()

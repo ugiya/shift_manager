@@ -6,6 +6,12 @@ async function openEditor(page: Page) {
   await expect(page.getByTestId("editor")).toBeVisible();
 }
 
+// Employees live in the "Employee Preferences" tab (2026-07-02 editor layout).
+async function employeeRows(page: Page) {
+  await page.getByTestId("editor-tab-employees").click();
+  return page.getByTestId("employee-row");
+}
+
 test("export JSON downloads a requirements file", async ({ page }) => {
   await openEditor(page);
   const [download] = await Promise.all([
@@ -27,7 +33,7 @@ test("export CSV downloads a roster file (labelled lossy)", async ({ page }) => 
 
 test("importing a JSON document replaces the whole roster", async ({ page }) => {
   await openEditor(page);
-  await expect(page.getByTestId("employee-row")).toHaveCount(40);
+  await expect(await employeeRows(page)).toHaveCount(40);
   const doc = {
     sites: [{ id: "hq", name: "HQ" }],
     roles: [{ id: "dev", name: "Dev" }],
@@ -47,7 +53,7 @@ test("importing a JSON document replaces the whole roster", async ({ page }) => 
 
 test("importing a CSV that references unknown entities is rejected and keeps the roster", async ({ page }) => {
   await openEditor(page);
-  await expect(page.getByTestId("employee-row")).toHaveCount(40);
+  await expect(await employeeRows(page)).toHaveCount(40);
   const csv = "id,name,team,roles,projects,can_manage,status\n" +
     "x,X,Nowhere,Ghostrole,Ghostproj,false,active\n";
   await page.getByTestId("import-file").setInputFiles({
