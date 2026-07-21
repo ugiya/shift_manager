@@ -10,9 +10,7 @@ import { workloadRows, type WorkloadRow } from "../lib/workload";
 
 type SortKey = "name" | "shifts" | "nights" | "weekends" | "burden" | "vsTeam";
 type Sort = { key: SortKey; dir: 1 | -1 };
-
-// Heaviest first — who the scheduler needs to see (e2e pins this default order).
-const DEFAULT_SORT: Sort = { key: "burden", dir: -1 };
+// null = no user selection: workloadRows() default order (heaviest first), no arrow.
 
 function sortValue(r: WorkloadRow, key: SortKey): number {
   switch (key) {
@@ -20,7 +18,8 @@ function sortValue(r: WorkloadRow, key: SortKey): number {
     case "nights": return r.nights;
     case "weekends": return r.weekends;
     case "burden": return r.totalBurden;
-    case "vsTeam": return r.totalBurden - r.teamAvg;
+    // One decimal, like the cell renders: rows that LOOK equal must tie (then A→Z).
+    case "vsTeam": return Math.round((r.totalBurden - r.teamAvg) * 10) / 10;
     case "name": return 0; // names compare via localeCompare below
   }
 }
@@ -30,9 +29,10 @@ export default function WorkloadPanel({ ds, assignments }: {
 }) {
   const { t } = useI18n();
   const [advanced, setAdvanced] = useState(false);
-  const [sort, setSort] = useState<Sort>(DEFAULT_SORT);
+  const [sort, setSort] = useState<Sort | null>(null);
   const rows = useMemo(() => {
     const base = ds ? workloadRows(ds, assignments) : [];
+    if (!sort) return base;
     return [...base].sort((a, b) => {
       const cmp = sort.key === "name"
         ? a.employee.name.localeCompare(b.employee.name)
@@ -51,19 +51,19 @@ export default function WorkloadPanel({ ds, assignments }: {
   }
 
   const header = (key: SortKey, label: string, opts?: { title?: string; className?: string }) => {
-    const active = sort.key === key;
+    const dir = sort?.key === key ? sort.dir : 0; // 0 = not the active sort column
     return (
       <th className={opts?.className} title={opts?.title}
-        aria-sort={active ? (sort.dir === 1 ? "ascending" : "descending") : undefined}>
-        <button type="button" className={`workload__sort${active ? " is-active" : ""}`}
+        aria-sort={dir === 0 ? undefined : dir === 1 ? "ascending" : "descending"}>
+        <button type="button" className={`workload__sort${dir !== 0 ? " is-active" : ""}`}
           data-testid={`workload-sort-${key}`}
-          onClick={() => setSort((s) => s.key === key
+          onClick={() => setSort((s) => s?.key === key
             ? { key, dir: s.dir === 1 ? -1 : 1 }
             : { key, dir: key === "name" ? 1 : -1 })}>
           {label}
-          {active && (
+          {dir !== 0 && (
             <span className="workload__sort-arrow" aria-hidden>
-              {sort.dir === 1 ? "▲" : "▼"}
+              {dir === 1 ? "▲" : "▼"}
             </span>
           )}
         </button>
@@ -79,7 +79,7 @@ export default function WorkloadPanel({ ds, assignments }: {
           onClick={() => setAdvanced((v) => {
             const next = !v;
             // Never leave the table sorted by a column that just went invisible.
-            if (!next && (sort.key === "burden" || sort.key === "vsTeam")) setSort(DEFAULT_SORT);
+            if (!next && (sort?.key === "burden" || sort?.key === "vsTeam")) setSort(null);
             return next;
           })} title={t("wlAdvancedTitle")}>
           {t("wlAdvanced")}

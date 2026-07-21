@@ -684,14 +684,14 @@ h1, h2, h3, p { margin: 0; }
 
 /* Interactive affordances: consistent motion + a visible keyboard focus everywhere. */
 .btn, .viewtab, .viewby__btn, .sitetab, .sidepanel__tab, .pday, .stepper__btn,
-.roassign__btn, .roassign__opt, .seat select, .in {
+.roassign__btn, .roassign__opt, .seat select, .in, .workload__sort {
   transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease,
     box-shadow 120ms ease, filter 120ms ease;
 }
 .btn:focus-visible, .viewtab:focus-visible, .viewby__btn:focus-visible,
 .sitetab:focus-visible, .sidepanel__tab:focus-visible, .pday:focus-visible,
 .stepper__btn:focus-visible, .roassign__btn:focus-visible, .roassign__opt:focus-visible,
-.seat select:focus-visible, .in:focus-visible {
+.seat select:focus-visible, .in:focus-visible, .workload__sort:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
 }
